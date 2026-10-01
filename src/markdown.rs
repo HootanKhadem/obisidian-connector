@@ -181,30 +181,19 @@ fn frontmatter_tags(frontmatter: &Map<String, Value>) -> Vec<String> {
 
 /// `#tags` in the body. A tag must follow whitespace and contain at least one non-digit.
 fn inline_tags(body: &str) -> Vec<String> {
-    let characters: Vec<char> = body.chars().collect();
-    let mut tags = Vec::new();
-    let mut position = 0;
-    while position < characters.len() {
-        let starts_tag = characters[position] == '#'
-            && (position == 0 || characters[position - 1].is_whitespace());
-        if !starts_tag {
-            position += 1;
-            continue;
-        }
-        let name_start = position + 1;
-        let name_end = name_start
-            + characters[name_start..]
-                .iter()
-                .take_while(|character| is_tag_char(**character))
-                .count();
-        let name: String = characters[name_start..name_end].iter().collect();
-        let name = name.trim_end_matches('/');
-        if name.chars().any(|character| !character.is_ascii_digit()) {
-            tags.push(name.to_string());
-        }
-        position = name_end;
-    }
-    tags
+    body.split(char::is_whitespace)
+        .filter_map(|word| word.strip_prefix('#'))
+        .map(|after_hash| {
+            let name_length: usize = after_hash
+                .chars()
+                .take_while(|character| is_tag_char(*character))
+                .map(char::len_utf8)
+                .sum();
+            after_hash[..name_length].trim_end_matches('/')
+        })
+        .filter(|name| name.chars().any(|character| !character.is_ascii_digit()))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Returns the unique link targets of `[[wikilinks]]` and `![[embeds]]`, without aliases or headings.
@@ -365,5 +354,11 @@ mod tests {
         let frontmatter = parse_frontmatter("---\n\"double key\": 1\n'single key': 2\n---\n");
         assert_eq!(frontmatter["double key"], json!(1));
         assert_eq!(frontmatter["single key"], json!(2));
+    }
+
+    #[test]
+    fn extract_tags_stops_at_punctuation_and_needs_preceding_whitespace() {
+        let note = "#first#second, (#bracketed) #tagged, end #last";
+        assert_eq!(extract_tags(note), vec!["first", "tagged", "last"]);
     }
 }

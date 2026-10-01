@@ -84,10 +84,11 @@ impl Vault {
     /// Resolves a normalised relative path to a location that is guaranteed to stay inside the vault.
     fn full_path(&self, original: &str, relative_path: &str) -> Result<PathBuf> {
         let full = self.root.join(relative_path);
-        let mut existing = full.as_path();
-        while !existing.exists() {
-            existing = existing.parent().unwrap_or(&self.root);
-        }
+        // The nearest part of the path that exists shows where symlinks really lead.
+        let existing = full
+            .ancestors()
+            .find(|ancestor| ancestor.exists())
+            .unwrap_or(&self.root);
         if !existing.canonicalize()?.starts_with(&self.root) {
             return Err(VaultError::InvalidPath(
                 original.to_string(),
