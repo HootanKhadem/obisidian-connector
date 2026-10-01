@@ -6,3 +6,4 @@ pub mod vault;
 pub mod tools;
 pub mod mcp;
 pub mod discovery;
+pub mod setup;
