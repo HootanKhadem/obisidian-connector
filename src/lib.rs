@@ -3,3 +3,4 @@
 
 pub mod markdown;
 pub mod vault;
+pub mod tools;
