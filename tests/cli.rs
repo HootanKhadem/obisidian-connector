@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 
+use obsidian_connector::discovery::{config_dir_for, obsidian_config_paths};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -212,8 +213,11 @@ fn serve_speaks_mcp_over_stdio() {
 }
 
 fn register_obsidian_vaults(home: &Path, vaults: &[(&Path, bool)]) {
-    let config_dir = home.join(".config/obsidian");
-    fs::create_dir_all(&config_dir).unwrap();
+    // Write the settings where Obsidian keeps them on this OS, as the binary sees the environment from `cmd`.
+    let os = std::env::consts::OS;
+    let config_dir = config_dir_for(os, Some(home.join(".config")), None);
+    let config_file = obsidian_config_paths(os, home, config_dir.as_deref()).remove(0);
+    fs::create_dir_all(config_file.parent().unwrap()).unwrap();
     let entries: serde_json::Map<String, Value> = vaults
         .iter()
         .enumerate()
@@ -224,11 +228,7 @@ fn register_obsidian_vaults(home: &Path, vaults: &[(&Path, bool)]) {
             )
         })
         .collect();
-    fs::write(
-        config_dir.join("obsidian.json"),
-        json!({"vaults": entries}).to_string(),
-    )
-    .unwrap();
+    fs::write(&config_file, json!({"vaults": entries}).to_string()).unwrap();
 }
 
 #[test]

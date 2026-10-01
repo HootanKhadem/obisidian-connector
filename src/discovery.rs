@@ -72,6 +72,19 @@ pub fn obsidian_config_paths(os: &str, home: &Path, config_dir: Option<&Path>) -
     }
 }
 
+/// The settings folder Obsidian uses, from `XDG_CONFIG_HOME` on Linux or `APPDATA` on Windows.
+pub fn config_dir_for(
+    os: &str,
+    xdg_config_home: Option<PathBuf>,
+    appdata: Option<PathBuf>,
+) -> Option<PathBuf> {
+    match os {
+        "windows" => appdata,
+        "macos" => None,
+        _ => xdg_config_home,
+    }
+}
+
 /// Picks the vault to serve from an explicit selector (path or vault name) or the known vaults.
 pub fn resolve_vault(
     selector: Option<&str>,
@@ -107,9 +120,11 @@ pub fn known_vaults() -> Vec<KnownVault> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_default();
-    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
-        .or_else(|| std::env::var_os("APPDATA"))
-        .map(PathBuf::from);
+    let config_dir = config_dir_for(
+        std::env::consts::OS,
+        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
+        std::env::var_os("APPDATA").map(PathBuf::from),
+    );
     obsidian_config_paths(std::env::consts::OS, &home, config_dir.as_deref())
         .iter()
         .filter_map(|p| std::fs::read_to_string(p).ok())
@@ -193,6 +208,16 @@ mod tests {
                 "C:/Users/me/AppData/Roaming/obsidian/obsidian.json"
             )]
         );
+    }
+
+    #[test]
+    fn config_dir_uses_the_variable_for_the_os() {
+        let xdg = || Some(PathBuf::from("/xdg"));
+        let appdata = || Some(PathBuf::from("C:/AppData"));
+        assert_eq!(config_dir_for("linux", xdg(), appdata()), xdg());
+        assert_eq!(config_dir_for("windows", xdg(), appdata()), appdata());
+        assert_eq!(config_dir_for("windows", xdg(), None), None);
+        assert_eq!(config_dir_for("macos", xdg(), appdata()), None);
     }
 
     #[test]
