@@ -2,6 +2,12 @@
 name = "obsidian-connector"
 version = "0.1.0"
 edition = "2024"
+description = "Connect any AI agent or model to an Obsidian vault via MCP or a JSON CLI"
+license = "MIT"
+repository = "https://github.com/HootanKhadem/obisidian-connector"
+readme = "README.md"
+keywords = ["obsidian", "mcp", "ai", "agent", "notes"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 clap = { version = "4.6.7", features = ["derive", "env"] }
@@ -12,3 +18,8 @@ walkdir = "2.5.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

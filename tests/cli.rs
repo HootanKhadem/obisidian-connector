@@ -274,7 +274,11 @@ fn setup_writes_client_config_and_keeps_a_backup() {
     let entry = &written["mcpServers"]["obsidian"];
     assert!(Path::new(entry["command"].as_str().unwrap()).is_absolute());
     let vault_arg = entry["args"][2].as_str().unwrap();
-    assert_eq!(Path::new(vault_arg), v.path().canonicalize().unwrap());
+    assert!(Path::new(vault_arg).is_absolute());
+    assert_eq!(
+        Path::new(vault_arg).canonicalize().unwrap(),
+        v.path().canonicalize().unwrap()
+    );
     assert!(home.path().join(".cursor/mcp.json.bak").exists());
 }
 
