@@ -28,7 +28,7 @@ pub enum SchemaFormat {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ToolDef {
+pub struct ToolDefinition {
     pub name: &'static str,
     pub description: &'static str,
     pub input_schema: Value,
@@ -50,7 +50,7 @@ impl Toolbox {
     }
 
     /// The tools available in the current mode.
-    pub fn definitions(&self) -> Vec<ToolDef> {
+    pub fn definitions(&self) -> Vec<ToolDefinition> {
         definitions(self.read_only)
     }
 
@@ -60,79 +60,99 @@ impl Toolbox {
     }
 
     /// Runs a tool and returns its textual result.
-    pub fn call(&self, name: &str, args: &Value) -> Result<String, ToolError> {
-        let def = all_definitions()
+    pub fn call(&self, name: &str, arguments: &Value) -> Result<String, ToolError> {
+        let definition = all_definitions()
             .into_iter()
-            .find(|d| d.name == name)
+            .find(|definition| definition.name == name)
             .ok_or_else(|| ToolError::UnknownTool(name.to_string()))?;
-        if def.writes && self.read_only {
+        if definition.writes && self.read_only {
             return Err(ToolError::ReadOnly(name.to_string()));
         }
-        let args = Args::new(args)?;
-        let v = &self.vault;
+        let arguments = Arguments::new(arguments)?;
+        let vault = &self.vault;
         match name {
-            "list_notes" => to_json(&v.list_notes(args.opt_str("folder")?)?),
-            "read_note" => Ok(v.read_note(args.str("path")?)?),
+            "list_notes" => to_json(&vault.list_notes(arguments.optional_string("folder")?)?),
+            "read_note" => Ok(vault.read_note(arguments.required_string("path")?)?),
             "create_note" => {
-                let overwrite = args.opt_bool("overwrite")?.unwrap_or(false);
-                let path = v.write_note(args.str("path")?, args.str("content")?, overwrite)?;
+                let overwrite = arguments.optional_bool("overwrite")?.unwrap_or(false);
+                let path = vault.write_note(
+                    arguments.required_string("path")?,
+                    arguments.required_string("content")?,
+                    overwrite,
+                )?;
                 Ok(format!("Saved {path}"))
             }
             "append_to_note" => Ok(format!(
                 "Appended to {}",
-                v.append_note(args.str("path")?, args.str("content")?)?
+                vault.append_note(
+                    arguments.required_string("path")?,
+                    arguments.required_string("content")?
+                )?
             )),
-            "delete_note" => Ok(format!("Deleted {}", v.delete_note(args.str("path")?)?)),
+            "delete_note" => Ok(format!(
+                "Deleted {}",
+                vault.delete_note(arguments.required_string("path")?)?
+            )),
             "move_note" => Ok(format!(
                 "Moved to {}",
-                v.move_note(args.str("from")?, args.str("to")?)?
+                vault.move_note(
+                    arguments.required_string("from")?,
+                    arguments.required_string("to")?
+                )?
             )),
             "search_notes" => {
-                let limit = args.opt_usize("limit")?.unwrap_or(DEFAULT_SEARCH_LIMIT);
-                to_json(&v.search(args.str("query")?, limit)?)
+                let limit = arguments
+                    .optional_count("limit")?
+                    .unwrap_or(DEFAULT_SEARCH_LIMIT);
+                to_json(&vault.search(arguments.required_string("query")?, limit)?)
             }
-            "get_backlinks" => to_json(&v.backlinks(args.str("path")?)?),
-            "list_tags" => to_json(&v.tags()?),
-            "find_notes_by_tag" => to_json(&v.notes_with_tag(args.str("tag")?)?),
-            "get_note_info" => to_json(&v.note_info(args.str("path")?)?),
+            "get_backlinks" => to_json(&vault.backlinks(arguments.required_string("path")?)?),
+            "list_tags" => to_json(&vault.tags()?),
+            "find_notes_by_tag" => {
+                to_json(&vault.notes_with_tag(arguments.required_string("tag")?)?)
+            }
+            "get_note_info" => to_json(&vault.note_info(arguments.required_string("path")?)?),
             _ => Err(ToolError::UnknownTool(name.to_string())),
         }
     }
 }
 
 /// The tools available with or without write access.
-pub fn definitions(read_only: bool) -> Vec<ToolDef> {
+pub fn definitions(read_only: bool) -> Vec<ToolDefinition> {
     all_definitions()
         .into_iter()
-        .filter(|d| !(read_only && d.writes))
+        .filter(|definition| !(read_only && definition.writes))
         .collect()
 }
 
 /// Tool definitions rendered in the requested schema dialect.
 pub fn export(format: SchemaFormat, read_only: bool) -> Value {
-    let tools = definitions(read_only).into_iter().map(|d| match format {
-        SchemaFormat::Mcp => json!({"name": d.name, "description": d.description, "inputSchema": d.input_schema}),
-        SchemaFormat::Anthropic => json!({"name": d.name, "description": d.description, "input_schema": d.input_schema}),
+    let tools = definitions(read_only).into_iter().map(|definition| match format {
+        SchemaFormat::Mcp => json!({"name": definition.name, "description": definition.description, "inputSchema": definition.input_schema}),
+        SchemaFormat::Anthropic => json!({"name": definition.name, "description": definition.description, "input_schema": definition.input_schema}),
         SchemaFormat::OpenAi => json!({
             "type": "function",
-            "function": {"name": d.name, "description": d.description, "parameters": d.input_schema},
+            "function": {"name": definition.name, "description": definition.description, "parameters": definition.input_schema},
         }),
     });
     Value::Array(tools.collect())
 }
 
 fn to_json<T: serde::Serialize>(value: &T) -> Result<String, ToolError> {
-    serde_json::to_string_pretty(value).map_err(|e| ToolError::InvalidArguments(e.to_string()))
+    serde_json::to_string_pretty(value)
+        .map_err(|error| ToolError::InvalidArguments(error.to_string()))
 }
 
 /// Typed accessors over a JSON arguments object.
-struct Args<'a>(Option<&'a serde_json::Map<String, Value>>);
+struct Arguments<'a> {
+    fields: Option<&'a serde_json::Map<String, Value>>,
+}
 
-impl<'a> Args<'a> {
-    fn new(args: &'a Value) -> Result<Self, ToolError> {
-        match args {
-            Value::Null => Ok(Self(None)),
-            Value::Object(map) => Ok(Self(Some(map))),
+impl<'a> Arguments<'a> {
+    fn new(arguments: &'a Value) -> Result<Self, ToolError> {
+        match arguments {
+            Value::Null => Ok(Self { fields: None }),
+            Value::Object(map) => Ok(Self { fields: Some(map) }),
             _ => Err(ToolError::InvalidArguments(
                 "arguments must be a JSON object".into(),
             )),
@@ -140,37 +160,40 @@ impl<'a> Args<'a> {
     }
 
     fn get(&self, key: &str) -> Option<&'a Value> {
-        self.0.and_then(|m| m.get(key)).filter(|v| !v.is_null())
+        self.fields
+            .and_then(|fields| fields.get(key))
+            .filter(|value| !value.is_null())
     }
 
-    fn str(&self, key: &str) -> Result<&'a str, ToolError> {
-        self.opt_str(key)?
+    fn required_string(&self, key: &str) -> Result<&'a str, ToolError> {
+        self.optional_string(key)?
             .ok_or_else(|| ToolError::InvalidArguments(format!("missing required string '{key}'")))
     }
 
-    fn opt_str(&self, key: &str) -> Result<Option<&'a str>, ToolError> {
+    fn optional_string(&self, key: &str) -> Result<Option<&'a str>, ToolError> {
         self.get(key)
-            .map(|v| {
-                v.as_str()
+            .map(|value| {
+                value
+                    .as_str()
                     .ok_or_else(|| ToolError::InvalidArguments(format!("'{key}' must be a string")))
             })
             .transpose()
     }
 
-    fn opt_bool(&self, key: &str) -> Result<Option<bool>, ToolError> {
+    fn optional_bool(&self, key: &str) -> Result<Option<bool>, ToolError> {
         self.get(key)
-            .map(|v| {
-                v.as_bool().ok_or_else(|| {
+            .map(|value| {
+                value.as_bool().ok_or_else(|| {
                     ToolError::InvalidArguments(format!("'{key}' must be a boolean"))
                 })
             })
             .transpose()
     }
 
-    fn opt_usize(&self, key: &str) -> Result<Option<usize>, ToolError> {
+    fn optional_count(&self, key: &str) -> Result<Option<usize>, ToolError> {
         self.get(key)
-            .map(|v| {
-                v.as_u64().map(|n| n as usize).ok_or_else(|| {
+            .map(|value| {
+                value.as_u64().map(|count| count as usize).ok_or_else(|| {
                     ToolError::InvalidArguments(format!("'{key}' must be a non-negative integer"))
                 })
             })
@@ -182,13 +205,13 @@ fn schema(properties: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": properties, "required": required})
 }
 
-fn path_prop() -> Value {
+fn note_path_property() -> Value {
     json!({"type": "string", "description": "Vault-relative note path, e.g. 'Projects/Plan' (the .md extension is optional)"})
 }
 
-fn all_definitions() -> Vec<ToolDef> {
+fn all_definitions() -> Vec<ToolDefinition> {
     vec![
-        ToolDef {
+        ToolDefinition {
             name: "list_notes",
             description: "List the markdown notes in the vault, optionally only inside one folder.",
             input_schema: schema(
@@ -197,18 +220,18 @@ fn all_definitions() -> Vec<ToolDef> {
             ),
             writes: false,
         },
-        ToolDef {
+        ToolDefinition {
             name: "read_note",
             description: "Read the full markdown content of a note, including its frontmatter.",
-            input_schema: schema(json!({"path": path_prop()}), &["path"]),
+            input_schema: schema(json!({"path": note_path_property()}), &["path"]),
             writes: false,
         },
-        ToolDef {
+        ToolDefinition {
             name: "create_note",
             description: "Create a note (and any missing folders). Fails if the note exists unless overwrite is true.",
             input_schema: schema(
                 json!({
-                    "path": path_prop(),
+                    "path": note_path_property(),
                     "content": {"type": "string", "description": "Markdown content of the note"},
                     "overwrite": {"type": "boolean", "description": "Replace the note if it already exists (default false)"},
                 }),
@@ -216,22 +239,22 @@ fn all_definitions() -> Vec<ToolDef> {
             ),
             writes: true,
         },
-        ToolDef {
+        ToolDefinition {
             name: "append_to_note",
             description: "Append markdown to the end of a note on a new line, creating the note if it does not exist.",
             input_schema: schema(
-                json!({"path": path_prop(), "content": {"type": "string", "description": "Markdown to append"}}),
+                json!({"path": note_path_property(), "content": {"type": "string", "description": "Markdown to append"}}),
                 &["path", "content"],
             ),
             writes: true,
         },
-        ToolDef {
+        ToolDefinition {
             name: "delete_note",
             description: "Permanently delete a note.",
-            input_schema: schema(json!({"path": path_prop()}), &["path"]),
+            input_schema: schema(json!({"path": note_path_property()}), &["path"]),
             writes: true,
         },
-        ToolDef {
+        ToolDefinition {
             name: "move_note",
             description: "Move or rename a note. Fails if the destination already exists. Links to it are not rewritten.",
             input_schema: schema(
@@ -243,7 +266,7 @@ fn all_definitions() -> Vec<ToolDef> {
             ),
             writes: true,
         },
-        ToolDef {
+        ToolDefinition {
             name: "search_notes",
             description: "Case-insensitive full-text search. Returns notes containing every word of the query (in the content or file path) with the matching lines.",
             input_schema: schema(
@@ -255,19 +278,19 @@ fn all_definitions() -> Vec<ToolDef> {
             ),
             writes: false,
         },
-        ToolDef {
+        ToolDefinition {
             name: "get_backlinks",
             description: "List the notes that link to the given note with [[wikilinks]] or ![[embeds]].",
-            input_schema: schema(json!({"path": path_prop()}), &["path"]),
+            input_schema: schema(json!({"path": note_path_property()}), &["path"]),
             writes: false,
         },
-        ToolDef {
+        ToolDefinition {
             name: "list_tags",
             description: "List every tag used in the vault with the number of notes that use it.",
             input_schema: schema(json!({}), &[]),
             writes: false,
         },
-        ToolDef {
+        ToolDefinition {
             name: "find_notes_by_tag",
             description: "List the notes carrying a tag (frontmatter or inline). Nested tags match their parent, e.g. 'project' matches 'project/alpha'.",
             input_schema: schema(
@@ -276,10 +299,10 @@ fn all_definitions() -> Vec<ToolDef> {
             ),
             writes: false,
         },
-        ToolDef {
+        ToolDefinition {
             name: "get_note_info",
             description: "Get a note's metadata: frontmatter properties, tags, outgoing links, backlinks and size.",
-            input_schema: schema(json!({"path": path_prop()}), &["path"]),
+            input_schema: schema(json!({"path": note_path_property()}), &["path"]),
             writes: false,
         },
     ]
@@ -292,7 +315,7 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn toolbox(read_only: bool) -> (TempDir, Toolbox) {
+    fn toolbox_with_sample_notes(read_only: bool) -> (TempDir, Toolbox) {
         let dir = TempDir::new().unwrap();
         fs::write(
             dir.path().join("Hello.md"),
@@ -306,23 +329,30 @@ mod tests {
 
     #[test]
     fn definitions_have_unique_names_and_valid_schemas() {
-        let (_dir, tb) = toolbox(false);
-        let defs = tb.definitions();
-        let names: HashSet<_> = defs.iter().map(|d| d.name).collect();
-        assert_eq!(names.len(), defs.len());
-        for def in &defs {
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        let definitions = toolbox.definitions();
+        let names: HashSet<_> = definitions
+            .iter()
+            .map(|definition| definition.name)
+            .collect();
+        assert_eq!(names.len(), definitions.len());
+        for definition in &definitions {
             assert!(
-                !def.description.is_empty(),
+                !definition.description.is_empty(),
                 "{} has no description",
-                def.name
+                definition.name
             );
-            assert_eq!(def.input_schema["type"], "object", "{}", def.name);
-            let props = def.input_schema["properties"].as_object().unwrap();
-            for required in def.input_schema["required"].as_array().unwrap() {
+            assert_eq!(
+                definition.input_schema["type"], "object",
+                "{}",
+                definition.name
+            );
+            let properties = definition.input_schema["properties"].as_object().unwrap();
+            for required in definition.input_schema["required"].as_array().unwrap() {
                 assert!(
-                    props.contains_key(required.as_str().unwrap()),
+                    properties.contains_key(required.as_str().unwrap()),
                     "{} requires unknown {required}",
-                    def.name
+                    definition.name
                 );
             }
         }
@@ -330,8 +360,12 @@ mod tests {
 
     #[test]
     fn definitions_cover_core_operations() {
-        let (_dir, tb) = toolbox(false);
-        let names: Vec<_> = tb.definitions().iter().map(|d| d.name).collect();
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        let names: Vec<_> = toolbox
+            .definitions()
+            .iter()
+            .map(|definition| definition.name)
+            .collect();
         for expected in [
             "list_notes",
             "read_note",
@@ -351,27 +385,35 @@ mod tests {
 
     #[test]
     fn read_only_mode_hides_write_tools() {
-        let (_dir, tb) = toolbox(true);
-        let defs = tb.definitions();
-        assert!(defs.iter().all(|d| !d.writes));
-        assert!(defs.iter().any(|d| d.name == "read_note"));
-        assert!(!defs.iter().any(|d| d.name == "create_note"));
+        let (_dir, toolbox) = toolbox_with_sample_notes(true);
+        let definitions = toolbox.definitions();
+        assert!(definitions.iter().all(|definition| !definition.writes));
+        assert!(
+            definitions
+                .iter()
+                .any(|definition| definition.name == "read_note")
+        );
+        assert!(
+            !definitions
+                .iter()
+                .any(|definition| definition.name == "create_note")
+        );
     }
 
     #[test]
     fn read_only_mode_refuses_write_calls() {
-        let (dir, tb) = toolbox(true);
-        let err = tb
+        let (dir, toolbox) = toolbox_with_sample_notes(true);
+        let error = toolbox
             .call("create_note", &json!({"path": "X", "content": "y"}))
             .unwrap_err();
-        assert!(matches!(err, ToolError::ReadOnly(_)));
+        assert!(matches!(error, ToolError::ReadOnly(_)));
         assert!(!dir.path().join("X.md").exists());
     }
 
     #[test]
     fn export_mcp_format() {
-        let (_dir, tb) = toolbox(false);
-        let exported = tb.export(SchemaFormat::Mcp);
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        let exported = toolbox.export(SchemaFormat::Mcp);
         let first = &exported.as_array().unwrap()[0];
         assert!(first["name"].is_string());
         assert!(first["description"].is_string());
@@ -380,8 +422,8 @@ mod tests {
 
     #[test]
     fn export_openai_format() {
-        let (_dir, tb) = toolbox(false);
-        let exported = tb.export(SchemaFormat::OpenAi);
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        let exported = toolbox.export(SchemaFormat::OpenAi);
         let first = &exported.as_array().unwrap()[0];
         assert_eq!(first["type"], "function");
         assert!(first["function"]["name"].is_string());
@@ -390,8 +432,8 @@ mod tests {
 
     #[test]
     fn export_anthropic_format() {
-        let (_dir, tb) = toolbox(false);
-        let exported = tb.export(SchemaFormat::Anthropic);
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        let exported = toolbox.export(SchemaFormat::Anthropic);
         let first = &exported.as_array().unwrap()[0];
         assert!(first["name"].is_string());
         assert_eq!(first["input_schema"]["type"], "object");
@@ -399,46 +441,48 @@ mod tests {
 
     #[test]
     fn unknown_tool_is_an_error() {
-        let (_dir, tb) = toolbox(false);
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
         assert!(matches!(
-            tb.call("nope", &json!({})),
+            toolbox.call("nope", &json!({})),
             Err(ToolError::UnknownTool(_))
         ));
     }
 
     #[test]
     fn missing_or_mistyped_arguments_are_reported() {
-        let (_dir, tb) = toolbox(false);
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
         assert!(matches!(
-            tb.call("read_note", &json!({})),
+            toolbox.call("read_note", &json!({})),
             Err(ToolError::InvalidArguments(_))
         ));
         assert!(matches!(
-            tb.call("read_note", &json!({"path": 5})),
+            toolbox.call("read_note", &json!({"path": 5})),
             Err(ToolError::InvalidArguments(_))
         ));
         assert!(matches!(
-            tb.call("read_note", &json!(null)),
+            toolbox.call("read_note", &json!(null)),
             Err(ToolError::InvalidArguments(_))
         ));
         assert!(matches!(
-            tb.call("search_notes", &json!({"query": "x", "limit": "ten"})),
+            toolbox.call("search_notes", &json!({"query": "x", "limit": "ten"})),
             Err(ToolError::InvalidArguments(_))
         ));
     }
 
     #[test]
     fn list_notes_returns_json_array() {
-        let (_dir, tb) = toolbox(false);
-        let out: Value = serde_json::from_str(&tb.call("list_notes", &json!({})).unwrap()).unwrap();
-        assert_eq!(out, json!(["Hello.md", "World.md"]));
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        let output: Value =
+            serde_json::from_str(&toolbox.call("list_notes", &json!({})).unwrap()).unwrap();
+        assert_eq!(output, json!(["Hello.md", "World.md"]));
     }
 
     #[test]
     fn read_note_returns_raw_content() {
-        let (_dir, tb) = toolbox(false);
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
         assert!(
-            tb.call("read_note", &json!({"path": "World"}))
+            toolbox
+                .call("read_note", &json!({"path": "World"}))
                 .unwrap()
                 .starts_with("The world")
         );
@@ -446,63 +490,76 @@ mod tests {
 
     #[test]
     fn create_append_move_delete_roundtrip() {
-        let (_dir, tb) = toolbox(false);
-        tb.call(
-            "create_note",
-            &json!({"path": "Inbox/Idea", "content": "one"}),
-        )
-        .unwrap();
-        assert!(
-            tb.call(
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        toolbox
+            .call(
                 "create_note",
-                &json!({"path": "Inbox/Idea", "content": "x"})
+                &json!({"path": "Inbox/Idea", "content": "one"}),
             )
-            .is_err()
+            .unwrap();
+        assert!(
+            toolbox
+                .call(
+                    "create_note",
+                    &json!({"path": "Inbox/Idea", "content": "x"})
+                )
+                .is_err()
         );
-        tb.call(
-            "create_note",
-            &json!({"path": "Inbox/Idea", "content": "two", "overwrite": true}),
-        )
-        .unwrap();
-        tb.call(
-            "append_to_note",
-            &json!({"path": "Inbox/Idea", "content": "three"}),
-        )
-        .unwrap();
+        toolbox
+            .call(
+                "create_note",
+                &json!({"path": "Inbox/Idea", "content": "two", "overwrite": true}),
+            )
+            .unwrap();
+        toolbox
+            .call(
+                "append_to_note",
+                &json!({"path": "Inbox/Idea", "content": "three"}),
+            )
+            .unwrap();
         assert_eq!(
-            tb.call("read_note", &json!({"path": "Inbox/Idea"}))
+            toolbox
+                .call("read_note", &json!({"path": "Inbox/Idea"}))
                 .unwrap(),
             "two\nthree"
         );
-        let moved = tb
+        let moved = toolbox
             .call(
                 "move_note",
                 &json!({"from": "Inbox/Idea", "to": "Done/Idea"}),
             )
             .unwrap();
         assert!(moved.contains("Done/Idea.md"));
-        let deleted = tb
+        let deleted = toolbox
             .call("delete_note", &json!({"path": "Done/Idea"}))
             .unwrap();
         assert!(deleted.contains("Done/Idea.md"));
-        assert!(tb.call("read_note", &json!({"path": "Done/Idea"})).is_err());
+        assert!(
+            toolbox
+                .call("read_note", &json!({"path": "Done/Idea"}))
+                .is_err()
+        );
     }
 
     #[test]
     fn search_notes_returns_structured_results() {
-        let (_dir, tb) = toolbox(false);
-        let out: Value =
-            serde_json::from_str(&tb.call("search_notes", &json!({"query": "world"})).unwrap())
-                .unwrap();
-        let paths: Vec<_> = out
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        let output: Value = serde_json::from_str(
+            &toolbox
+                .call("search_notes", &json!({"query": "world"}))
+                .unwrap(),
+        )
+        .unwrap();
+        let paths: Vec<_> = output
             .as_array()
             .unwrap()
             .iter()
-            .map(|r| r["path"].as_str().unwrap())
+            .map(|result| result["path"].as_str().unwrap())
             .collect();
         assert_eq!(paths, vec!["Hello.md", "World.md"]);
         let limited: Value = serde_json::from_str(
-            &tb.call("search_notes", &json!({"query": "world", "limit": 1}))
+            &toolbox
+                .call("search_notes", &json!({"query": "world", "limit": 1}))
                 .unwrap(),
         )
         .unwrap();
@@ -511,23 +568,50 @@ mod tests {
 
     #[test]
     fn graph_and_tag_tools() {
-        let (_dir, tb) = toolbox(false);
-        let backlinks: Value =
-            serde_json::from_str(&tb.call("get_backlinks", &json!({"path": "World"})).unwrap())
-                .unwrap();
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        let backlinks: Value = serde_json::from_str(
+            &toolbox
+                .call("get_backlinks", &json!({"path": "World"}))
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(backlinks, json!(["Hello.md"]));
-        let tags: Value = serde_json::from_str(&tb.call("list_tags", &json!({})).unwrap()).unwrap();
+        let tags: Value =
+            serde_json::from_str(&toolbox.call("list_tags", &json!({})).unwrap()).unwrap();
         assert_eq!(tags, json!({"greeting": 1, "place": 1}));
         let tagged: Value = serde_json::from_str(
-            &tb.call("find_notes_by_tag", &json!({"tag": "#place"}))
+            &toolbox
+                .call("find_notes_by_tag", &json!({"tag": "#place"}))
                 .unwrap(),
         )
         .unwrap();
         assert_eq!(tagged, json!(["World.md"]));
-        let info: Value =
-            serde_json::from_str(&tb.call("get_note_info", &json!({"path": "Hello"})).unwrap())
-                .unwrap();
+        let info: Value = serde_json::from_str(
+            &toolbox
+                .call("get_note_info", &json!({"path": "Hello"}))
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(info["links"], json!(["World"]));
         assert_eq!(info["tags"], json!(["greeting"]));
+    }
+
+    #[test]
+    fn every_property_has_a_type_and_description() {
+        for definition in definitions(false) {
+            let properties = definition.input_schema["properties"].as_object().unwrap();
+            for (property_name, property) in properties {
+                assert!(
+                    property["type"].is_string(),
+                    "{}.{property_name} has no type",
+                    definition.name
+                );
+                assert!(
+                    property["description"].is_string(),
+                    "{}.{property_name} has no description",
+                    definition.name
+                );
+            }
+        }
     }
 }

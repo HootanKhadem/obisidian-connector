@@ -138,7 +138,12 @@ Every module was written test-first, and its unit tests sit next to the code.
 ```sh
 cargo test
 cargo clippy --all-targets -- -D warnings
+cargo llvm-cov --summary-only --fail-under-lines 95   # coverage gate, enforced in CI
+cargo mutants                                          # mutation testing, advisory in CI
 ```
+
+Install the two tools with `cargo install cargo-llvm-cov cargo-mutants --locked`
+and `rustup component add llvm-tools-preview`.
 
 | Module | Responsibility |
 | --- | --- |

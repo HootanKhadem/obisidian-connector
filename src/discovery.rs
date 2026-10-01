@@ -33,33 +33,42 @@ pub fn parse_obsidian_config(json: &str) -> Vec<KnownVault> {
     };
     let mut found: Vec<KnownVault> = vaults
         .values()
-        .filter_map(|v| {
-            let path = v.get("path")?.as_str()?;
-            let name = path.rsplit(['/', '\\']).find(|s| !s.is_empty())?;
+        .filter_map(|vault_entry| {
+            let path = vault_entry.get("path")?.as_str()?;
+            let name = path
+                .rsplit(['/', '\\'])
+                .find(|segment| !segment.is_empty())?;
             Some(KnownVault {
                 name: name.to_string(),
                 path: PathBuf::from(path),
-                open: v.get("open").and_then(Value::as_bool).unwrap_or(false),
+                open: vault_entry
+                    .get("open")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
             })
         })
         .collect();
-    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found.sort_by(|first, second| first.name.cmp(&second.name));
     found
 }
 
 /// Locations where Obsidian stores `obsidian.json` on the given OS (`std::env::consts::OS` values).
-pub fn obsidian_config_paths(os: &str, home: &Path, config_dir: Option<&Path>) -> Vec<PathBuf> {
+pub fn obsidian_config_paths(
+    os: &str,
+    home: &Path,
+    config_directory: Option<&Path>,
+) -> Vec<PathBuf> {
     let file = Path::new("obsidian").join("obsidian.json");
     match os {
         "macos" => vec![home.join("Library/Application Support").join(&file)],
         "windows" => {
-            let appdata = config_dir
+            let appdata = config_directory
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| home.join("AppData/Roaming"));
             vec![appdata.join(&file)]
         }
         _ => {
-            let config = config_dir
+            let config = config_directory
                 .map(Path::to_path_buf)
                 .unwrap_or_else(|| home.join(".config"));
             vec![
@@ -73,7 +82,7 @@ pub fn obsidian_config_paths(os: &str, home: &Path, config_dir: Option<&Path>) -
 }
 
 /// The settings folder Obsidian uses, from `XDG_CONFIG_HOME` on Linux or `APPDATA` on Windows.
-pub fn config_dir_for(
+pub fn config_directory_for(
     os: &str,
     xdg_config_home: Option<PathBuf>,
     appdata: Option<PathBuf>,
@@ -90,22 +99,27 @@ pub fn resolve_vault(
     selector: Option<&str>,
     known: &[KnownVault],
 ) -> Result<PathBuf, DiscoveryError> {
-    let names = || known.iter().map(|v| v.name.clone()).collect::<Vec<_>>();
+    let names = || {
+        known
+            .iter()
+            .map(|vault| vault.name.clone())
+            .collect::<Vec<_>>()
+    };
     if let Some(selector) = selector {
         if Path::new(selector).is_dir() {
             return Ok(PathBuf::from(selector));
         }
         return known
             .iter()
-            .find(|v| v.name.eq_ignore_ascii_case(selector))
-            .map(|v| v.path.clone())
+            .find(|vault| vault.name.eq_ignore_ascii_case(selector))
+            .map(|vault| vault.path.clone())
             .ok_or_else(|| DiscoveryError::Unknown(selector.to_string(), names()));
     }
     match known {
         [] => Err(DiscoveryError::NoVault),
         [only] => Ok(only.path.clone()),
         _ => {
-            let open: Vec<_> = known.iter().filter(|v| v.open).collect();
+            let open: Vec<_> = known.iter().filter(|vault| vault.open).collect();
             match open.as_slice() {
                 [only] => Ok(only.path.clone()),
                 _ => Err(DiscoveryError::Ambiguous(names())),
@@ -120,14 +134,14 @@ pub fn known_vaults() -> Vec<KnownVault> {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_default();
-    let config_dir = config_dir_for(
+    let config_directory = config_directory_for(
         std::env::consts::OS,
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
         std::env::var_os("APPDATA").map(PathBuf::from),
     );
-    obsidian_config_paths(std::env::consts::OS, &home, config_dir.as_deref())
+    obsidian_config_paths(std::env::consts::OS, &home, config_directory.as_deref())
         .iter()
-        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .filter_map(|config_file| std::fs::read_to_string(config_file).ok())
         .flat_map(|json| parse_obsidian_config(&json))
         .collect()
 }
@@ -214,19 +228,19 @@ mod tests {
     fn config_dir_uses_the_variable_for_the_os() {
         let xdg = || Some(PathBuf::from("/xdg"));
         let appdata = || Some(PathBuf::from("C:/AppData"));
-        assert_eq!(config_dir_for("linux", xdg(), appdata()), xdg());
-        assert_eq!(config_dir_for("windows", xdg(), appdata()), appdata());
-        assert_eq!(config_dir_for("windows", xdg(), None), None);
-        assert_eq!(config_dir_for("macos", xdg(), appdata()), None);
+        assert_eq!(config_directory_for("linux", xdg(), appdata()), xdg());
+        assert_eq!(config_directory_for("windows", xdg(), appdata()), appdata());
+        assert_eq!(config_directory_for("windows", xdg(), None), None);
+        assert_eq!(config_directory_for("macos", xdg(), appdata()), None);
     }
 
     #[test]
     fn resolve_prefers_an_existing_folder() {
-        let dir = TempDir::new().unwrap();
-        let selector = dir.path().to_str().unwrap();
+        let vault_directory = TempDir::new().unwrap();
+        let selector = vault_directory.path().to_str().unwrap();
         assert_eq!(
             resolve_vault(Some(selector), &[known("Other", "/x", true)]).unwrap(),
-            dir.path()
+            vault_directory.path()
         );
     }
 

@@ -65,12 +65,15 @@ fn parse_value(raw: &str) -> Value {
     if raw.is_empty() {
         return Value::Null;
     }
-    if let Some(inner) = raw.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+    if let Some(inner) = raw
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
         return Value::Array(
             inner
                 .split(',')
                 .map(str::trim)
-                .filter(|s| !s.is_empty())
+                .filter(|item| !item.is_empty())
                 .map(parse_scalar)
                 .collect(),
         );
@@ -92,46 +95,46 @@ fn parse_scalar(raw: &str) -> Value {
         "false" => return Value::Bool(false),
         _ => {}
     }
-    if let Ok(n) = raw.parse::<i64>() {
-        return Value::from(n);
+    if let Ok(integer) = raw.parse::<i64>() {
+        return Value::from(integer);
     }
-    if let Ok(f) = raw.parse::<f64>()
-        && f.is_finite()
+    if let Ok(float) = raw.parse::<f64>()
+        && float.is_finite()
     {
-        return Value::from(f);
+        return Value::from(float);
     }
     Value::String(raw.to_string())
 }
 
-fn unquote(s: &str) -> &str {
-    s.trim_matches(|c| c == '"' || c == '\'')
+fn unquote(text: &str) -> &str {
+    text.trim_matches(|character| character == '"' || character == '\'')
 }
 
 /// Removes fenced code blocks and inline code spans so they are not scanned for tags or links.
 fn strip_code(body: &str) -> String {
-    let mut out = String::with_capacity(body.len());
+    let mut stripped = String::with_capacity(body.len());
     let mut in_fence = false;
     for line in body.lines() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_fence = !in_fence;
-            out.push('\n');
+            stripped.push('\n');
             continue;
         }
         if in_fence {
-            out.push('\n');
+            stripped.push('\n');
             continue;
         }
-        for (i, segment) in line.split('`').enumerate() {
-            if i % 2 == 0 {
-                out.push_str(segment);
+        for (segment_index, segment) in line.split('`').enumerate() {
+            if segment_index % 2 == 0 {
+                stripped.push_str(segment);
             } else {
-                out.push(' ');
+                stripped.push(' ');
             }
         }
-        out.push('\n');
+        stripped.push('\n');
     }
-    out
+    stripped
 }
 
 fn push_unique(list: &mut Vec<String>, item: &str) {
@@ -140,54 +143,57 @@ fn push_unique(list: &mut Vec<String>, item: &str) {
     }
 }
 
-fn is_tag_char(c: char) -> bool {
-    c.is_alphanumeric() || matches!(c, '_' | '-' | '/')
+fn is_tag_char(character: char) -> bool {
+    character.is_alphanumeric() || matches!(character, '_' | '-' | '/')
 }
 
 /// Returns the unique tags of a note (without `#`), from frontmatter and inline `#tags`, in order of appearance.
 pub fn extract_tags(content: &str) -> Vec<String> {
     let mut tags = Vec::new();
-    let frontmatter = parse_frontmatter(content);
+    for tag in frontmatter_tags(&parse_frontmatter(content)) {
+        push_unique(&mut tags, &tag);
+    }
+    for tag in inline_tags(&strip_code(split_frontmatter(content).1)) {
+        push_unique(&mut tags, &tag);
+    }
+    tags
+}
+
+/// Tags listed under the `tags` or `tag` property, as a list or a comma/space separated string.
+fn frontmatter_tags(frontmatter: &Map<String, Value>) -> Vec<String> {
+    let mut tags = Vec::new();
     for key in ["tags", "tag"] {
         match frontmatter.get(key) {
             Some(Value::Array(items)) => {
-                for item in items {
-                    if let Some(s) = item.as_str() {
-                        push_unique(&mut tags, s.trim_start_matches('#'));
-                    }
-                }
+                let names = items.iter().filter_map(Value::as_str);
+                tags.extend(names.map(|name| name.trim_start_matches('#').to_string()));
             }
-            Some(Value::String(s)) => {
-                for part in s.split(|c: char| c == ',' || c.is_whitespace()) {
-                    push_unique(&mut tags, part.trim_start_matches('#'));
-                }
+            Some(Value::String(names)) => {
+                let parts =
+                    names.split(|character: char| character == ',' || character.is_whitespace());
+                tags.extend(parts.map(|part| part.trim_start_matches('#').to_string()));
             }
             _ => {}
         }
     }
-
-    let body = strip_code(split_frontmatter(content).1);
-    let chars: Vec<char> = body.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let preceded_ok = i == 0 || chars[i - 1].is_whitespace();
-        if chars[i] == '#' && preceded_ok {
-            let start = i + 1;
-            let mut end = start;
-            while end < chars.len() && is_tag_char(chars[end]) {
-                end += 1;
-            }
-            let tag: String = chars[start..end].iter().collect();
-            let tag = tag.trim_end_matches('/');
-            if tag.chars().any(|c| !c.is_ascii_digit()) {
-                push_unique(&mut tags, tag);
-            }
-            i = end.max(i + 1);
-        } else {
-            i += 1;
-        }
-    }
     tags
+}
+
+/// `#tags` in the body. A tag must follow whitespace and contain at least one non-digit.
+fn inline_tags(body: &str) -> Vec<String> {
+    body.split(char::is_whitespace)
+        .filter_map(|word| word.strip_prefix('#'))
+        .map(|after_hash| {
+            let name_length: usize = after_hash
+                .chars()
+                .take_while(|character| is_tag_char(*character))
+                .map(char::len_utf8)
+                .sum();
+            after_hash[..name_length].trim_end_matches('/')
+        })
+        .filter(|name| name.chars().any(|character| !character.is_ascii_digit()))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Returns the unique link targets of `[[wikilinks]]` and `![[embeds]]`, without aliases or headings.
@@ -245,25 +251,26 @@ mod tests {
 
     #[test]
     fn parse_frontmatter_reads_scalars() {
-        let fm =
+        let frontmatter =
             parse_frontmatter("---\ntitle: My Note\ncount: 3\ndone: true\nquoted: \"a: b\"\n---\n");
-        assert_eq!(fm["title"], json!("My Note"));
-        assert_eq!(fm["count"], json!(3));
-        assert_eq!(fm["done"], json!(true));
-        assert_eq!(fm["quoted"], json!("a: b"));
+        assert_eq!(frontmatter["title"], json!("My Note"));
+        assert_eq!(frontmatter["count"], json!(3));
+        assert_eq!(frontmatter["done"], json!(true));
+        assert_eq!(frontmatter["quoted"], json!("a: b"));
     }
 
     #[test]
     fn parse_frontmatter_reads_inline_and_block_lists() {
-        let fm = parse_frontmatter("---\ntags: [a, \"b\"]\naliases:\n  - One\n  - Two\n---\n");
-        assert_eq!(fm["tags"], json!(["a", "b"]));
-        assert_eq!(fm["aliases"], json!(["One", "Two"]));
+        let frontmatter =
+            parse_frontmatter("---\ntags: [a, \"b\"]\naliases:\n  - One\n  - Two\n---\n");
+        assert_eq!(frontmatter["tags"], json!(["a", "b"]));
+        assert_eq!(frontmatter["aliases"], json!(["One", "Two"]));
     }
 
     #[test]
     fn parse_frontmatter_treats_empty_value_as_null() {
-        let fm = parse_frontmatter("---\nempty:\n---\n");
-        assert_eq!(fm["empty"], Value::Null);
+        let frontmatter = parse_frontmatter("---\nempty:\n---\n");
+        assert_eq!(frontmatter["empty"], Value::Null);
     }
 
     #[test]
@@ -316,5 +323,42 @@ mod tests {
     fn extract_wikilinks_dedupes_and_skips_empty_and_code() {
         let note = "[[A]] [[A|again]] [[]] [[#Local heading]] `[[Code]]`";
         assert_eq!(extract_wikilinks(note), vec!["A"]);
+    }
+
+    #[test]
+    fn parse_frontmatter_ignores_comment_lines_even_with_colons() {
+        let frontmatter = parse_frontmatter("---\n# note: ignored\n\ntitle: Kept\n---\n");
+        assert_eq!(frontmatter.len(), 1);
+        assert_eq!(frontmatter["title"], json!("Kept"));
+    }
+
+    #[test]
+    fn parse_frontmatter_reads_null_and_false() {
+        let frontmatter = parse_frontmatter("---\nnothing: null\ntilde: ~\ndone: false\n---\n");
+        assert_eq!(frontmatter["nothing"], Value::Null);
+        assert_eq!(frontmatter["tilde"], Value::Null);
+        assert_eq!(frontmatter["done"], json!(false));
+    }
+
+    #[test]
+    fn parse_frontmatter_keeps_unbalanced_quotes() {
+        let frontmatter =
+            parse_frontmatter("---\nopening: \"text\nclosing: text\"\nsingle: 'text\n---\n");
+        assert_eq!(frontmatter["opening"], json!("\"text"));
+        assert_eq!(frontmatter["closing"], json!("text\""));
+        assert_eq!(frontmatter["single"], json!("'text"));
+    }
+
+    #[test]
+    fn parse_frontmatter_unquotes_keys() {
+        let frontmatter = parse_frontmatter("---\n\"double key\": 1\n'single key': 2\n---\n");
+        assert_eq!(frontmatter["double key"], json!(1));
+        assert_eq!(frontmatter["single key"], json!(2));
+    }
+
+    #[test]
+    fn extract_tags_stops_at_punctuation_and_needs_preceding_whitespace() {
+        let note = "#first#second, (#bracketed) #tagged, end #last";
+        assert_eq!(extract_tags(note), vec!["first", "tagged", "last"]);
     }
 }

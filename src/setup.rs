@@ -37,16 +37,16 @@ pub struct Launch {
 }
 
 impl Launch {
-    pub fn args(&self) -> Vec<String> {
-        let mut args = vec![
+    pub fn arguments(&self) -> Vec<String> {
+        let mut arguments = vec![
             "serve".to_string(),
             "--vault".to_string(),
             self.vault.display().to_string(),
         ];
         if self.read_only {
-            args.push("--read-only".to_string());
+            arguments.push("--read-only".to_string());
         }
-        args
+        arguments
     }
 }
 
@@ -57,7 +57,7 @@ pub fn server_entry(client: Client, launch: &Launch) -> Value {
         entry.insert("type".into(), json!("stdio"));
     }
     entry.insert("command".into(), json!(launch.binary.display().to_string()));
-    entry.insert("args".into(), json!(launch.args()));
+    entry.insert("args".into(), json!(launch.arguments()));
     Value::Object(entry)
 }
 
@@ -75,9 +75,9 @@ pub fn merge_into_config(
     client: Client,
     launch: &Launch,
 ) -> Result<String, SetupError> {
-    let mut config = match existing.map(str::trim).filter(|s| !s.is_empty()) {
+    let mut config = match existing.map(str::trim).filter(|text| !text.is_empty()) {
         Some(text) => serde_json::from_str::<Value>(text)
-            .map_err(|e| SetupError::InvalidJson(e.to_string()))?,
+            .map_err(|parse_error| SetupError::InvalidJson(parse_error.to_string()))?,
         None => json!({}),
     };
     let root = config.as_object_mut().ok_or(SetupError::NotAnObject)?;
@@ -98,11 +98,11 @@ pub fn install_command(client: Client, launch: &Launch) -> Option<String> {
         return None;
     }
     let mut parts = vec![shell_quote(&launch.binary.display().to_string())];
-    for arg in launch.args() {
-        parts.push(if arg.starts_with('-') || arg == "serve" {
-            arg
+    for argument in launch.arguments() {
+        parts.push(if argument.starts_with('-') || argument == "serve" {
+            argument
         } else {
-            shell_quote(&arg)
+            shell_quote(&argument)
         });
     }
     Some(format!(
@@ -111,8 +111,8 @@ pub fn install_command(client: Client, launch: &Launch) -> Option<String> {
     ))
 }
 
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// Where `client` keeps its global MCP config on the given OS.
@@ -154,11 +154,11 @@ mod tests {
     #[test]
     fn args_point_at_the_vault_and_honour_read_only() {
         assert_eq!(
-            launch(false).args(),
+            launch(false).arguments(),
             vec!["serve", "--vault", "/home/me/My Vault"]
         );
         assert_eq!(
-            launch(true).args(),
+            launch(true).arguments(),
             vec!["serve", "--vault", "/home/me/My Vault", "--read-only"]
         );
     }
@@ -244,13 +244,13 @@ mod tests {
 
     #[test]
     fn install_command_quotes_single_quotes() {
-        let l = Launch {
+        let launch_with_quote = Launch {
             binary: "/bin/oc".into(),
             vault: "/v/it's".into(),
             read_only: false,
         };
         assert!(
-            install_command(Client::ClaudeCode, &l)
+            install_command(Client::ClaudeCode, &launch_with_quote)
                 .unwrap()
                 .ends_with(r#"--vault '/v/it'\''s'"#)
         );
