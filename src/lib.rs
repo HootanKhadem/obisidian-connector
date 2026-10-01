@@ -2,3 +2,4 @@
 //! via the Model Context Protocol (MCP) or a plain JSON command line.
 
 pub mod markdown;
+pub mod vault;
