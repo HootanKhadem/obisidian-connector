@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 
 /// The key the connector is registered under in client configs.
 pub const SERVER_NAME: &str = "obsidian";
@@ -38,7 +38,11 @@ pub struct Launch {
 
 impl Launch {
     pub fn args(&self) -> Vec<String> {
-        let mut args = vec!["serve".to_string(), "--vault".to_string(), self.vault.display().to_string()];
+        let mut args = vec![
+            "serve".to_string(),
+            "--vault".to_string(),
+            self.vault.display().to_string(),
+        ];
         if self.read_only {
             args.push("--read-only".to_string());
         }
@@ -66,9 +70,14 @@ pub fn servers_key(client: Client) -> &'static str {
 }
 
 /// Inserts (or replaces) the connector in an existing config, keeping every other setting.
-pub fn merge_into_config(existing: Option<&str>, client: Client, launch: &Launch) -> Result<String, SetupError> {
+pub fn merge_into_config(
+    existing: Option<&str>,
+    client: Client,
+    launch: &Launch,
+) -> Result<String, SetupError> {
     let mut config = match existing.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(text) => serde_json::from_str::<Value>(text).map_err(|e| SetupError::InvalidJson(e.to_string()))?,
+        Some(text) => serde_json::from_str::<Value>(text)
+            .map_err(|e| SetupError::InvalidJson(e.to_string()))?,
         None => json!({}),
     };
     let root = config.as_object_mut().ok_or(SetupError::NotAnObject)?;
@@ -90,9 +99,16 @@ pub fn install_command(client: Client, launch: &Launch) -> Option<String> {
     }
     let mut parts = vec![shell_quote(&launch.binary.display().to_string())];
     for arg in launch.args() {
-        parts.push(if arg.starts_with('-') || arg == "serve" { arg } else { shell_quote(&arg) });
+        parts.push(if arg.starts_with('-') || arg == "serve" {
+            arg
+        } else {
+            shell_quote(&arg)
+        });
     }
-    Some(format!("claude mcp add --scope user {SERVER_NAME} -- {}", parts.join(" ")))
+    Some(format!(
+        "claude mcp add --scope user {SERVER_NAME} -- {}",
+        parts.join(" ")
+    ))
 }
 
 fn shell_quote(s: &str) -> String {
@@ -100,11 +116,18 @@ fn shell_quote(s: &str) -> String {
 }
 
 /// Where `client` keeps its global MCP config on the given OS.
-pub fn config_path(client: Client, os: &str, home: &Path, appdata: Option<&Path>) -> Result<PathBuf, SetupError> {
+pub fn config_path(
+    client: Client,
+    os: &str,
+    home: &Path,
+    appdata: Option<&Path>,
+) -> Result<PathBuf, SetupError> {
     // Per-OS folder where desktop apps keep their settings.
     let app_config = || match os {
         "macos" => home.join("Library/Application Support"),
-        "windows" => appdata.map(Path::to_path_buf).unwrap_or_else(|| home.join("AppData/Roaming")),
+        "windows" => appdata
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.join("AppData/Roaming")),
         _ => home.join(".config"),
     };
     match client {
@@ -121,19 +144,32 @@ mod tests {
     use super::*;
 
     fn launch(read_only: bool) -> Launch {
-        Launch { binary: "/bin/obsidian-connector".into(), vault: "/home/me/My Vault".into(), read_only }
+        Launch {
+            binary: "/bin/obsidian-connector".into(),
+            vault: "/home/me/My Vault".into(),
+            read_only,
+        }
     }
 
     #[test]
     fn args_point_at_the_vault_and_honour_read_only() {
-        assert_eq!(launch(false).args(), vec!["serve", "--vault", "/home/me/My Vault"]);
-        assert_eq!(launch(true).args(), vec!["serve", "--vault", "/home/me/My Vault", "--read-only"]);
+        assert_eq!(
+            launch(false).args(),
+            vec!["serve", "--vault", "/home/me/My Vault"]
+        );
+        assert_eq!(
+            launch(true).args(),
+            vec!["serve", "--vault", "/home/me/My Vault", "--read-only"]
+        );
     }
 
     #[test]
     fn server_entry_is_a_stdio_command() {
         let entry = server_entry(Client::ClaudeDesktop, &launch(false));
-        assert_eq!(entry, json!({"command": "/bin/obsidian-connector", "args": ["serve", "--vault", "/home/me/My Vault"]}));
+        assert_eq!(
+            entry,
+            json!({"command": "/bin/obsidian-connector", "args": ["serve", "--vault", "/home/me/My Vault"]})
+        );
     }
 
     #[test]
@@ -151,18 +187,28 @@ mod tests {
 
     #[test]
     fn merge_creates_a_config_from_nothing() {
-        let merged: Value = serde_json::from_str(&merge_into_config(None, Client::Cursor, &launch(false)).unwrap()).unwrap();
-        assert_eq!(merged["mcpServers"]["obsidian"]["command"], "/bin/obsidian-connector");
+        let merged: Value =
+            serde_json::from_str(&merge_into_config(None, Client::Cursor, &launch(false)).unwrap())
+                .unwrap();
+        assert_eq!(
+            merged["mcpServers"]["obsidian"]["command"],
+            "/bin/obsidian-connector"
+        );
     }
 
     #[test]
     fn merge_keeps_other_servers_and_settings() {
         let existing = r#"{"theme": "dark", "mcpServers": {"other": {"command": "x"}, "obsidian": {"command": "old"}}}"#;
-        let merged: Value =
-            serde_json::from_str(&merge_into_config(Some(existing), Client::ClaudeDesktop, &launch(true)).unwrap()).unwrap();
+        let merged: Value = serde_json::from_str(
+            &merge_into_config(Some(existing), Client::ClaudeDesktop, &launch(true)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(merged["theme"], "dark");
         assert_eq!(merged["mcpServers"]["other"]["command"], "x");
-        assert_eq!(merged["mcpServers"]["obsidian"]["command"], "/bin/obsidian-connector");
+        assert_eq!(
+            merged["mcpServers"]["obsidian"]["command"],
+            "/bin/obsidian-connector"
+        );
         assert_eq!(merged["mcpServers"]["obsidian"]["args"][3], "--read-only");
     }
 
@@ -173,8 +219,14 @@ mod tests {
 
     #[test]
     fn merge_rejects_invalid_existing_config() {
-        assert!(matches!(merge_into_config(Some("{oops"), Client::Cursor, &launch(false)), Err(SetupError::InvalidJson(_))));
-        assert_eq!(merge_into_config(Some("[]"), Client::Cursor, &launch(false)), Err(SetupError::NotAnObject));
+        assert!(matches!(
+            merge_into_config(Some("{oops"), Client::Cursor, &launch(false)),
+            Err(SetupError::InvalidJson(_))
+        ));
+        assert_eq!(
+            merge_into_config(Some("[]"), Client::Cursor, &launch(false)),
+            Err(SetupError::NotAnObject)
+        );
         assert_eq!(
             merge_into_config(Some(r#"{"mcpServers": 3}"#), Client::Cursor, &launch(false)),
             Err(SetupError::NotAnObject)
@@ -192,8 +244,16 @@ mod tests {
 
     #[test]
     fn install_command_quotes_single_quotes() {
-        let l = Launch { binary: "/bin/oc".into(), vault: "/v/it's".into(), read_only: false };
-        assert!(install_command(Client::ClaudeCode, &l).unwrap().ends_with(r#"--vault '/v/it'\''s'"#));
+        let l = Launch {
+            binary: "/bin/oc".into(),
+            vault: "/v/it's".into(),
+            read_only: false,
+        };
+        assert!(
+            install_command(Client::ClaudeCode, &l)
+                .unwrap()
+                .ends_with(r#"--vault '/v/it'\''s'"#)
+        );
     }
 
     #[test]
@@ -201,17 +261,28 @@ mod tests {
         let home = Path::new("/home/me");
         assert_eq!(
             config_path(Client::ClaudeDesktop, "macos", Path::new("/Users/me"), None).unwrap(),
-            PathBuf::from("/Users/me/Library/Application Support/Claude/claude_desktop_config.json")
+            PathBuf::from(
+                "/Users/me/Library/Application Support/Claude/claude_desktop_config.json"
+            )
         );
         assert_eq!(
-            config_path(Client::ClaudeDesktop, "windows", home, Some(Path::new("C:/AppData"))).unwrap(),
+            config_path(
+                Client::ClaudeDesktop,
+                "windows",
+                home,
+                Some(Path::new("C:/AppData"))
+            )
+            .unwrap(),
             PathBuf::from("C:/AppData/Claude/claude_desktop_config.json")
         );
         assert_eq!(
             config_path(Client::ClaudeDesktop, "linux", home, None).unwrap(),
             PathBuf::from("/home/me/.config/Claude/claude_desktop_config.json")
         );
-        assert_eq!(config_path(Client::Cursor, "linux", home, None).unwrap(), PathBuf::from("/home/me/.cursor/mcp.json"));
+        assert_eq!(
+            config_path(Client::Cursor, "linux", home, None).unwrap(),
+            PathBuf::from("/home/me/.cursor/mcp.json")
+        );
         assert_eq!(
             config_path(Client::Windsurf, "linux", home, None).unwrap(),
             PathBuf::from("/home/me/.codeium/windsurf/mcp_config.json")
@@ -224,7 +295,13 @@ mod tests {
             config_path(Client::Vscode, "linux", home, None).unwrap(),
             PathBuf::from("/home/me/.config/Code/User/mcp.json")
         );
-        assert_eq!(config_path(Client::ClaudeCode, "linux", home, None), Err(SetupError::NoConfigFile(Client::ClaudeCode)));
-        assert_eq!(config_path(Client::Generic, "linux", home, None), Err(SetupError::NoConfigFile(Client::Generic)));
+        assert_eq!(
+            config_path(Client::ClaudeCode, "linux", home, None),
+            Err(SetupError::NoConfigFile(Client::ClaudeCode))
+        );
+        assert_eq!(
+            config_path(Client::Generic, "linux", home, None),
+            Err(SetupError::NoConfigFile(Client::Generic))
+        );
     }
 }

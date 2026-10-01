@@ -33,7 +33,11 @@ pub fn parse_frontmatter(content: &str) -> Map<String, Value> {
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if let Some(item) = trimmed.strip_prefix("- ").or(if trimmed == "-" { Some("") } else { None }) {
+        if let Some(item) =
+            trimmed
+                .strip_prefix("- ")
+                .or(if trimmed == "-" { Some("") } else { None })
+        {
             if let Some(key) = &current_key {
                 let entry = map.entry(key.clone()).or_insert(Value::Null);
                 if !entry.is_array() {
@@ -91,10 +95,10 @@ fn parse_scalar(raw: &str) -> Value {
     if let Ok(n) = raw.parse::<i64>() {
         return Value::from(n);
     }
-    if let Ok(f) = raw.parse::<f64>() {
-        if f.is_finite() {
-            return Value::from(f);
-        }
+    if let Ok(f) = raw.parse::<f64>()
+        && f.is_finite()
+    {
+        return Value::from(f);
     }
     Value::String(raw.to_string())
 }
@@ -241,7 +245,8 @@ mod tests {
 
     #[test]
     fn parse_frontmatter_reads_scalars() {
-        let fm = parse_frontmatter("---\ntitle: My Note\ncount: 3\ndone: true\nquoted: \"a: b\"\n---\n");
+        let fm =
+            parse_frontmatter("---\ntitle: My Note\ncount: 3\ndone: true\nquoted: \"a: b\"\n---\n");
         assert_eq!(fm["title"], json!("My Note"));
         assert_eq!(fm["count"], json!(3));
         assert_eq!(fm["done"], json!(true));
@@ -268,7 +273,10 @@ mod tests {
 
     #[test]
     fn extract_tags_finds_inline_tags() {
-        assert_eq!(extract_tags("Some #idea and #project/alpha here."), vec!["idea", "project/alpha"]);
+        assert_eq!(
+            extract_tags("Some #idea and #project/alpha here."),
+            vec!["idea", "project/alpha"]
+        );
     }
 
     #[test]

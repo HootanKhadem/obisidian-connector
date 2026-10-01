@@ -13,7 +13,9 @@ pub struct KnownVault {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DiscoveryError {
-    #[error("no vault given and none found in Obsidian's settings; pass --vault <path> or set OBSIDIAN_VAULT")]
+    #[error(
+        "no vault given and none found in Obsidian's settings; pass --vault <path> or set OBSIDIAN_VAULT"
+    )]
     NoVault,
     #[error("several Obsidian vaults found ({}); choose one with --vault <name or path>", .0.join(", "))]
     Ambiguous(Vec<String>),
@@ -51,14 +53,19 @@ pub fn obsidian_config_paths(os: &str, home: &Path, config_dir: Option<&Path>) -
     match os {
         "macos" => vec![home.join("Library/Application Support").join(&file)],
         "windows" => {
-            let appdata = config_dir.map(Path::to_path_buf).unwrap_or_else(|| home.join("AppData/Roaming"));
+            let appdata = config_dir
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| home.join("AppData/Roaming"));
             vec![appdata.join(&file)]
         }
         _ => {
-            let config = config_dir.map(Path::to_path_buf).unwrap_or_else(|| home.join(".config"));
+            let config = config_dir
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| home.join(".config"));
             vec![
                 config.join(&file),
-                home.join(".var/app/md.obsidian.Obsidian/config").join(&file),
+                home.join(".var/app/md.obsidian.Obsidian/config")
+                    .join(&file),
                 home.join("snap/obsidian/current/.config").join(&file),
             ]
         }
@@ -66,7 +73,10 @@ pub fn obsidian_config_paths(os: &str, home: &Path, config_dir: Option<&Path>) -
 }
 
 /// Picks the vault to serve from an explicit selector (path or vault name) or the known vaults.
-pub fn resolve_vault(selector: Option<&str>, known: &[KnownVault]) -> Result<PathBuf, DiscoveryError> {
+pub fn resolve_vault(
+    selector: Option<&str>,
+    known: &[KnownVault],
+) -> Result<PathBuf, DiscoveryError> {
     let names = || known.iter().map(|v| v.name.clone()).collect::<Vec<_>>();
     if let Some(selector) = selector {
         if Path::new(selector).is_dir() {
@@ -113,7 +123,11 @@ mod tests {
     use tempfile::TempDir;
 
     fn known(name: &str, path: &str, open: bool) -> KnownVault {
-        KnownVault { name: name.into(), path: PathBuf::from(path), open }
+        KnownVault {
+            name: name.into(),
+            path: PathBuf::from(path),
+            open,
+        }
     }
 
     #[test]
@@ -124,7 +138,10 @@ mod tests {
         }}"#;
         assert_eq!(
             parse_obsidian_config(json),
-            vec![known("Notes", "/home/me/Notes", true), known("Work Vault", "C:\\Users\\me\\Work Vault", false)]
+            vec![
+                known("Notes", "/home/me/Notes", true),
+                known("Work Vault", "C:\\Users\\me\\Work Vault", false)
+            ]
         );
     }
 
@@ -142,7 +159,9 @@ mod tests {
             paths,
             vec![
                 PathBuf::from("/home/me/.config/obsidian/obsidian.json"),
-                PathBuf::from("/home/me/.var/app/md.obsidian.Obsidian/config/obsidian/obsidian.json"),
+                PathBuf::from(
+                    "/home/me/.var/app/md.obsidian.Obsidian/config/obsidian/obsidian.json"
+                ),
                 PathBuf::from("/home/me/snap/obsidian/current/.config/obsidian/obsidian.json"),
             ]
         );
@@ -154,15 +173,25 @@ mod tests {
     fn config_paths_for_macos_and_windows() {
         assert_eq!(
             obsidian_config_paths("macos", Path::new("/Users/me"), None),
-            vec![PathBuf::from("/Users/me/Library/Application Support/obsidian/obsidian.json")]
+            vec![PathBuf::from(
+                "/Users/me/Library/Application Support/obsidian/obsidian.json"
+            )]
         );
         assert_eq!(
-            obsidian_config_paths("windows", Path::new("C:/Users/me"), Some(Path::new("C:/Users/me/AppData/Roaming"))),
-            vec![PathBuf::from("C:/Users/me/AppData/Roaming/obsidian/obsidian.json")]
+            obsidian_config_paths(
+                "windows",
+                Path::new("C:/Users/me"),
+                Some(Path::new("C:/Users/me/AppData/Roaming"))
+            ),
+            vec![PathBuf::from(
+                "C:/Users/me/AppData/Roaming/obsidian/obsidian.json"
+            )]
         );
         assert_eq!(
             obsidian_config_paths("windows", Path::new("C:/Users/me"), None),
-            vec![PathBuf::from("C:/Users/me/AppData/Roaming/obsidian/obsidian.json")]
+            vec![PathBuf::from(
+                "C:/Users/me/AppData/Roaming/obsidian/obsidian.json"
+            )]
         );
     }
 
@@ -170,13 +199,19 @@ mod tests {
     fn resolve_prefers_an_existing_folder() {
         let dir = TempDir::new().unwrap();
         let selector = dir.path().to_str().unwrap();
-        assert_eq!(resolve_vault(Some(selector), &[known("Other", "/x", true)]).unwrap(), dir.path());
+        assert_eq!(
+            resolve_vault(Some(selector), &[known("Other", "/x", true)]).unwrap(),
+            dir.path()
+        );
     }
 
     #[test]
     fn resolve_matches_vault_names_case_insensitively() {
         let vaults = [known("Notes", "/n", false), known("Work", "/w", false)];
-        assert_eq!(resolve_vault(Some("work"), &vaults).unwrap(), PathBuf::from("/w"));
+        assert_eq!(
+            resolve_vault(Some("work"), &vaults).unwrap(),
+            PathBuf::from("/w")
+        );
     }
 
     #[test]
@@ -184,13 +219,19 @@ mod tests {
         let vaults = [known("Notes", "/n", false)];
         assert_eq!(
             resolve_vault(Some("/definitely/missing"), &vaults),
-            Err(DiscoveryError::Unknown("/definitely/missing".into(), vec!["Notes".into()]))
+            Err(DiscoveryError::Unknown(
+                "/definitely/missing".into(),
+                vec!["Notes".into()]
+            ))
         );
     }
 
     #[test]
     fn resolve_without_selector_uses_the_only_or_the_open_vault() {
-        assert_eq!(resolve_vault(None, &[known("Notes", "/n", false)]).unwrap(), PathBuf::from("/n"));
+        assert_eq!(
+            resolve_vault(None, &[known("Notes", "/n", false)]).unwrap(),
+            PathBuf::from("/n")
+        );
         let vaults = [known("A", "/a", false), known("B", "/b", true)];
         assert_eq!(resolve_vault(None, &vaults).unwrap(), PathBuf::from("/b"));
     }
@@ -199,6 +240,9 @@ mod tests {
     fn resolve_without_selector_errors_when_ambiguous_or_empty() {
         assert_eq!(resolve_vault(None, &[]), Err(DiscoveryError::NoVault));
         let vaults = [known("A", "/a", false), known("B", "/b", false)];
-        assert_eq!(resolve_vault(None, &vaults), Err(DiscoveryError::Ambiguous(vec!["A".into(), "B".into()])));
+        assert_eq!(
+            resolve_vault(None, &vaults),
+            Err(DiscoveryError::Ambiguous(vec!["A".into(), "B".into()]))
+        );
     }
 }

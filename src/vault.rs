@@ -57,7 +57,9 @@ impl Vault {
         if !path.is_dir() {
             return Err(VaultError::VaultNotFound(path.to_path_buf()));
         }
-        Ok(Self { root: path.canonicalize()? })
+        Ok(Self {
+            root: path.canonicalize()?,
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -68,7 +70,10 @@ impl Vault {
     pub fn normalize(&self, note: &str) -> Result<String> {
         let mut rel = normalize_segments(note)?;
         if rel.is_empty() || note.trim().ends_with(['/', '\\']) {
-            return Err(VaultError::InvalidPath(note.to_string(), "a note name is required"));
+            return Err(VaultError::InvalidPath(
+                note.to_string(),
+                "a note name is required",
+            ));
         }
         if !rel.to_lowercase().ends_with(".md") {
             rel.push_str(".md");
@@ -84,7 +89,10 @@ impl Vault {
             existing = existing.parent().unwrap_or(&self.root);
         }
         if !existing.canonicalize()?.starts_with(&self.root) {
-            return Err(VaultError::InvalidPath(original.to_string(), "path leaves the vault"));
+            return Err(VaultError::InvalidPath(
+                original.to_string(),
+                "path leaves the vault",
+            ));
         }
         Ok(full)
     }
@@ -120,11 +128,15 @@ impl Vault {
                 .path()
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
-            if entry.file_type().is_file() && is_md {
-                if let Ok(rel) = entry.path().strip_prefix(&self.root) {
-                    let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect();
-                    notes.push(parts.join("/"));
-                }
+            if entry.file_type().is_file()
+                && is_md
+                && let Ok(rel) = entry.path().strip_prefix(&self.root)
+            {
+                let parts: Vec<_> = rel
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect();
+                notes.push(parts.join("/"));
             }
         }
         notes.sort();
@@ -152,7 +164,11 @@ impl Vault {
     pub fn append_note(&self, note: &str, content: &str) -> Result<String> {
         let rel = self.normalize(note)?;
         let full = self.full_path(note, &rel)?;
-        let mut existing = if full.is_file() { std::fs::read_to_string(&full)? } else { String::new() };
+        let mut existing = if full.is_file() {
+            std::fs::read_to_string(&full)?
+        } else {
+            String::new()
+        };
         if !existing.is_empty() && !existing.ends_with('\n') {
             existing.push('\n');
         }
@@ -202,7 +218,10 @@ impl Vault {
                     let lower = line.to_lowercase();
                     terms.iter().any(|t| lower.contains(t))
                 })
-                .map(|(i, line)| SearchMatch { line: i + 1, text: line.trim_end().to_string() })
+                .map(|(i, line)| SearchMatch {
+                    line: i + 1,
+                    text: line.trim_end().to_string(),
+                })
                 .collect();
             results.push(SearchResult { path, matches });
         }
@@ -218,11 +237,13 @@ impl Vault {
                 continue;
             }
             let content = std::fs::read_to_string(self.root.join(&path)).unwrap_or_default();
-            let links_here = crate::markdown::extract_wikilinks(&content).iter().any(|link| {
-                let link = link.replace('\\', "/").to_lowercase();
-                let link = strip_md(link.trim_start_matches('/'));
-                target == link || target.ends_with(&format!("/{link}"))
-            });
+            let links_here = crate::markdown::extract_wikilinks(&content)
+                .iter()
+                .any(|link| {
+                    let link = link.replace('\\', "/").to_lowercase();
+                    let link = strip_md(link.trim_start_matches('/'));
+                    target == link || target.ends_with(&format!("/{link}"))
+                });
             if links_here {
                 sources.push(path);
             }
@@ -285,7 +306,9 @@ fn normalize_segments(raw: &str) -> Result<String> {
         match segment {
             "" | "." => continue,
             ".." => return invalid("parent directory references are not allowed"),
-            s if s.starts_with('.') => return invalid("hidden files and folders are not accessible"),
+            s if s.starts_with('.') => {
+                return invalid("hidden files and folders are not accessible");
+            }
             s if s.contains(':') => return invalid("absolute paths are not allowed"),
             s => segments.push(s),
         }
@@ -327,15 +350,29 @@ mod tests {
     fn normalize_adds_extension_and_uses_forward_slashes() {
         let (_dir, vault) = vault_with(&[]);
         assert_eq!(vault.normalize("Folder/Note").unwrap(), "Folder/Note.md");
-        assert_eq!(vault.normalize("Folder\\Note.md").unwrap(), "Folder/Note.md");
+        assert_eq!(
+            vault.normalize("Folder\\Note.md").unwrap(),
+            "Folder/Note.md"
+        );
         assert_eq!(vault.normalize("./v1.2 notes").unwrap(), "v1.2 notes.md");
-        assert_eq!(vault.normalize("/leading/slash").unwrap(), "leading/slash.md");
+        assert_eq!(
+            vault.normalize("/leading/slash").unwrap(),
+            "leading/slash.md"
+        );
     }
 
     #[test]
     fn normalize_rejects_escapes_hidden_and_empty_paths() {
         let (_dir, vault) = vault_with(&[]);
-        for bad in ["../outside", "a/../../b", ".obsidian/app", "a/.git/x", "", "   ", "folder/"] {
+        for bad in [
+            "../outside",
+            "a/../../b",
+            ".obsidian/app",
+            "a/.git/x",
+            "",
+            "   ",
+            "folder/",
+        ] {
             assert!(
                 matches!(vault.normalize(bad), Err(VaultError::InvalidPath(..))),
                 "expected {bad:?} to be rejected"
@@ -350,8 +387,14 @@ mod tests {
         fs::write(outside.path().join("secret.md"), "secret").unwrap();
         let (dir, vault) = vault_with(&[]);
         std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
-        assert!(matches!(vault.read_note("link/secret"), Err(VaultError::InvalidPath(..))));
-        assert!(matches!(vault.write_note("link/new", "x", false), Err(VaultError::InvalidPath(..))));
+        assert!(matches!(
+            vault.read_note("link/secret"),
+            Err(VaultError::InvalidPath(..))
+        ));
+        assert!(matches!(
+            vault.write_note("link/new", "x", false),
+            Err(VaultError::InvalidPath(..))
+        ));
     }
 
     #[test]
@@ -368,24 +411,47 @@ mod tests {
 
     #[test]
     fn list_notes_filters_by_folder() {
-        let (_dir, vault) = vault_with(&[("A/c.md", ""), ("A/B/d.md", ""), ("AB/e.md", ""), ("f.md", "")]);
-        assert_eq!(vault.list_notes(Some("A")).unwrap(), vec!["A/B/d.md", "A/c.md"]);
-        assert!(matches!(vault.list_notes(Some("missing")), Err(VaultError::NotFound(_))));
+        let (_dir, vault) = vault_with(&[
+            ("A/c.md", ""),
+            ("A/B/d.md", ""),
+            ("AB/e.md", ""),
+            ("f.md", ""),
+        ]);
+        assert_eq!(
+            vault.list_notes(Some("A")).unwrap(),
+            vec!["A/B/d.md", "A/c.md"]
+        );
+        assert!(matches!(
+            vault.list_notes(Some("missing")),
+            Err(VaultError::NotFound(_))
+        ));
     }
 
     #[test]
     fn read_note_returns_content_and_errors_when_missing() {
         let (_dir, vault) = vault_with(&[("Note.md", "hello")]);
         assert_eq!(vault.read_note("Note").unwrap(), "hello");
-        assert!(matches!(vault.read_note("Nope"), Err(VaultError::NotFound(_))));
+        assert!(matches!(
+            vault.read_note("Nope"),
+            Err(VaultError::NotFound(_))
+        ));
     }
 
     #[test]
     fn write_note_creates_folders_and_refuses_to_overwrite() {
         let (dir, vault) = vault_with(&[]);
-        assert_eq!(vault.write_note("New/Deep/Note", "one", false).unwrap(), "New/Deep/Note.md");
-        assert_eq!(fs::read_to_string(dir.path().join("New/Deep/Note.md")).unwrap(), "one");
-        assert!(matches!(vault.write_note("New/Deep/Note", "two", false), Err(VaultError::AlreadyExists(_))));
+        assert_eq!(
+            vault.write_note("New/Deep/Note", "one", false).unwrap(),
+            "New/Deep/Note.md"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("New/Deep/Note.md")).unwrap(),
+            "one"
+        );
+        assert!(matches!(
+            vault.write_note("New/Deep/Note", "two", false),
+            Err(VaultError::AlreadyExists(_))
+        ));
         vault.write_note("New/Deep/Note", "two", true).unwrap();
         assert_eq!(vault.read_note("New/Deep/Note").unwrap(), "two");
     }
@@ -411,17 +477,32 @@ mod tests {
         let (dir, vault) = vault_with(&[("Gone.md", "x")]);
         assert_eq!(vault.delete_note("Gone").unwrap(), "Gone.md");
         assert!(!dir.path().join("Gone.md").exists());
-        assert!(matches!(vault.delete_note("Gone"), Err(VaultError::NotFound(_))));
+        assert!(matches!(
+            vault.delete_note("Gone"),
+            Err(VaultError::NotFound(_))
+        ));
     }
 
     #[test]
     fn move_note_renames_and_refuses_to_clobber() {
         let (_dir, vault) = vault_with(&[("Old.md", "x"), ("Taken.md", "y")]);
-        assert_eq!(vault.move_note("Old", "Archive/New").unwrap(), "Archive/New.md");
+        assert_eq!(
+            vault.move_note("Old", "Archive/New").unwrap(),
+            "Archive/New.md"
+        );
         assert_eq!(vault.read_note("Archive/New").unwrap(), "x");
-        assert!(matches!(vault.read_note("Old"), Err(VaultError::NotFound(_))));
-        assert!(matches!(vault.move_note("Archive/New", "Taken"), Err(VaultError::AlreadyExists(_))));
-        assert!(matches!(vault.move_note("Missing", "Elsewhere"), Err(VaultError::NotFound(_))));
+        assert!(matches!(
+            vault.read_note("Old"),
+            Err(VaultError::NotFound(_))
+        ));
+        assert!(matches!(
+            vault.move_note("Archive/New", "Taken"),
+            Err(VaultError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            vault.move_note("Missing", "Elsewhere"),
+            Err(VaultError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -437,15 +518,25 @@ mod tests {
         assert_eq!(
             results[0].matches,
             vec![
-                SearchMatch { line: 1, text: "Rust is great".into() },
-                SearchMatch { line: 3, text: "I like RUST and tea".into() },
+                SearchMatch {
+                    line: 1,
+                    text: "Rust is great".into()
+                },
+                SearchMatch {
+                    line: 3,
+                    text: "I like RUST and tea".into()
+                },
             ]
         );
     }
 
     #[test]
     fn search_matches_file_names_and_respects_limit() {
-        let (_dir, vault) = vault_with(&[("Projects/Alpha.md", "body"), ("b.md", "alpha"), ("c.md", "alpha")]);
+        let (_dir, vault) = vault_with(&[
+            ("Projects/Alpha.md", "body"),
+            ("b.md", "alpha"),
+            ("c.md", "alpha"),
+        ]);
         let results = vault.search("alpha", 2).unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].path, "Projects/Alpha.md");
@@ -455,7 +546,10 @@ mod tests {
     #[test]
     fn search_rejects_empty_query() {
         let (_dir, vault) = vault_with(&[]);
-        assert!(matches!(vault.search("  ", 10), Err(VaultError::InvalidInput(_))));
+        assert!(matches!(
+            vault.search("  ", 10),
+            Err(VaultError::InvalidInput(_))
+        ));
     }
 
     #[test]
@@ -467,8 +561,14 @@ mod tests {
             ("c.md", "links to [[Target.md#Heading]]"),
             ("d.md", "links to [[Other]]"),
         ]);
-        assert_eq!(vault.backlinks("Folder/Target").unwrap(), vec!["a.md", "b.md", "c.md"]);
-        assert!(matches!(vault.backlinks("Missing"), Err(VaultError::NotFound(_))));
+        assert_eq!(
+            vault.backlinks("Folder/Target").unwrap(),
+            vec!["a.md", "b.md", "c.md"]
+        );
+        assert!(matches!(
+            vault.backlinks("Missing"),
+            Err(VaultError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -489,7 +589,10 @@ mod tests {
             ("b.md", "#Project"),
             ("c.md", "#projects"),
         ]);
-        assert_eq!(vault.notes_with_tag("#project").unwrap(), vec!["a.md", "b.md"]);
+        assert_eq!(
+            vault.notes_with_tag("#project").unwrap(),
+            vec!["a.md", "b.md"]
+        );
     }
 
     #[test]
