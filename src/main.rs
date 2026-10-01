@@ -20,7 +20,7 @@ struct Cli {
 }
 
 #[derive(Args)]
-struct VaultArgs {
+struct VaultOptions {
     /// Vault folder or Obsidian vault name. Defaults to the only (or currently open) vault in Obsidian.
     #[arg(long, short, env = "OBSIDIAN_VAULT")]
     vault: Option<String>,
@@ -32,7 +32,7 @@ struct VaultArgs {
 #[derive(Subcommand)]
 enum Command {
     /// Run the MCP server on stdin/stdout (this is what MCP clients launch).
-    Serve(VaultArgs),
+    Serve(VaultOptions),
     /// Run a single tool and print its result, e.g. `call search_notes '{"query": "rust"}'`.
     Call {
         /// Tool name (see `tools`).
@@ -40,7 +40,7 @@ enum Command {
         /// Tool arguments as a JSON object, or `-` to read them from stdin.
         arguments: Option<String>,
         #[command(flatten)]
-        vault: VaultArgs,
+        options: VaultOptions,
     },
     /// Print the tool schemas for MCP, OpenAI or Anthropic function calling.
     Tools {
@@ -57,7 +57,7 @@ enum Command {
         #[arg(value_enum)]
         client: Client,
         #[command(flatten)]
-        vault: VaultArgs,
+        options: VaultOptions,
         /// Print the configuration instead of installing it.
         #[arg(long)]
         print: bool,
@@ -76,25 +76,27 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
-        Command::Serve(args) => {
-            let vault = open_vault(args.vault.as_deref())?;
+        Command::Serve(options) => {
+            let vault = open_vault(options.vault.as_deref())?;
             eprintln!(
                 "obsidian-connector: serving vault {}",
                 vault.root().display()
             );
-            let server = Server::new(Toolbox::new(vault, args.read_only));
+            let server = Server::new(Toolbox::new(vault, options.read_only));
             server
                 .run(std::io::stdin().lock(), std::io::stdout().lock())
-                .map_err(|e| e.to_string())
+                .map_err(|error| error.to_string())
         }
         Command::Call {
             tool,
             arguments,
-            vault,
+            options,
         } => {
-            let args = parse_arguments(arguments.as_deref())?;
-            let toolbox = Toolbox::new(open_vault(vault.vault.as_deref())?, vault.read_only);
-            let output = toolbox.call(&tool, &args).map_err(|e| e.to_string())?;
+            let arguments = parse_arguments(arguments.as_deref())?;
+            let toolbox = Toolbox::new(open_vault(options.vault.as_deref())?, options.read_only);
+            let output = toolbox
+                .call(&tool, &arguments)
+                .map_err(|error| error.to_string())?;
             println!("{output}");
             Ok(())
         }
@@ -111,23 +113,23 @@ fn run(cli: Cli) -> Result<(), String> {
             if vaults.is_empty() {
                 eprintln!("No vaults found in Obsidian's settings. Pass --vault <folder> instead.");
             }
-            for v in vaults {
-                let open = if v.open { "  (open)" } else { "" };
-                println!("{}\t{}{open}", v.name, v.path.display());
+            for vault in vaults {
+                let open = if vault.open { "  (open)" } else { "" };
+                println!("{}\t{}{open}", vault.name, vault.path.display());
             }
             Ok(())
         }
         Command::Setup {
             client,
-            vault,
+            options,
             print,
-        } => install(client, &vault, print),
+        } => install(client, &options, print),
     }
 }
 
 fn open_vault(selector: Option<&str>) -> Result<Vault, String> {
-    let path = resolve_vault(selector, &known_vaults()).map_err(|e| e.to_string())?;
-    Vault::open(path).map_err(|e| e.to_string())
+    let path = resolve_vault(selector, &known_vaults()).map_err(|error| error.to_string())?;
+    Vault::open(path).map_err(|error| error.to_string())
 }
 
 fn parse_arguments(raw: Option<&str>) -> Result<Value, String> {
@@ -137,7 +139,7 @@ fn parse_arguments(raw: Option<&str>) -> Result<Value, String> {
             let mut buf = String::new();
             std::io::stdin()
                 .read_to_string(&mut buf)
-                .map_err(|e| e.to_string())?;
+                .map_err(|error| error.to_string())?;
             buf
         }
         Some(text) => text.to_string(),
@@ -145,16 +147,16 @@ fn parse_arguments(raw: Option<&str>) -> Result<Value, String> {
     if text.trim().is_empty() {
         return Ok(Value::Object(Default::default()));
     }
-    serde_json::from_str(&text).map_err(|e| format!("arguments must be a JSON object: {e}"))
+    serde_json::from_str(&text).map_err(|error| format!("arguments must be a JSON object: {error}"))
 }
 
-fn install(client: Client, args: &VaultArgs, print: bool) -> Result<(), String> {
-    let vault = open_vault(args.vault.as_deref())?;
-    let binary = std::env::current_exe().map_err(|e| e.to_string())?;
+fn install(client: Client, options: &VaultOptions, print: bool) -> Result<(), String> {
+    let vault = open_vault(options.vault.as_deref())?;
+    let binary = std::env::current_exe().map_err(|error| error.to_string())?;
     let launch = Launch {
         binary: clean_path(&binary),
         vault: clean_path(vault.root()),
-        read_only: args.read_only,
+        read_only: options.read_only,
     };
 
     if client == Client::ClaudeCode {
@@ -167,10 +169,10 @@ fn install(client: Client, args: &VaultArgs, print: bool) -> Result<(), String> 
         let status = std::process::Command::new("claude")
             .args(["mcp", "add", "--scope", "user", setup::SERVER_NAME, "--"])
             .arg(&launch.binary)
-            .args(launch.args())
+            .args(launch.arguments())
             .status();
         return match status {
-            Ok(s) if s.success() => Ok(()),
+            Ok(exit_status) if exit_status.success() => Ok(()),
             _ => Err(format!(
                 "could not run the `claude` CLI; run this yourself:\n  {command}"
             )),
@@ -190,22 +192,22 @@ fn install(client: Client, args: &VaultArgs, print: bool) -> Result<(), String> 
     let Some(path) = path else {
         print!(
             "{}",
-            setup::merge_into_config(None, client, &launch).map_err(|e| e.to_string())?
+            setup::merge_into_config(None, client, &launch).map_err(|error| error.to_string())?
         );
         return Ok(());
     };
 
     let existing = std::fs::read_to_string(&path).ok();
     let merged = setup::merge_into_config(existing.as_deref(), client, &launch)
-        .map_err(|e| format!("{}: {e}", path.display()))?;
+        .map_err(|error| format!("{}: {error}", path.display()))?;
     if existing.is_some() {
         let backup = PathBuf::from(format!("{}.bak", path.display()));
-        std::fs::copy(&path, &backup).map_err(|e| e.to_string())?;
+        std::fs::copy(&path, &backup).map_err(|error| error.to_string())?;
     }
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    std::fs::write(&path, merged).map_err(|e| e.to_string())?;
+    std::fs::write(&path, merged).map_err(|error| error.to_string())?;
     println!(
         "Added the '{}' MCP server to {}.",
         setup::SERVER_NAME,
