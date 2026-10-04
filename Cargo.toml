@@ -1,6 +1,6 @@
 [package]
 name = "obsidian-connector"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Connect any AI agent or model to an Obsidian vault via MCP or a JSON CLI"
 license = "MIT"
