@@ -133,9 +133,10 @@ pub fn find_section(content: &str, heading: &str) -> Result<Section, String> {
         let mut matches: Vec<(usize, &Heading)> = headings
             .iter()
             .enumerate()
+            // Inside a parent's range every heading is already deeper than the parent, because
+            // the range ends at the next heading of the parent's level or higher.
             .filter(|(_, candidate)| {
                 (range.0..range.1).contains(&candidate.start)
-                    && candidate.level > parent_level
                     && (wanted_level == 0 || candidate.level == wanted_level)
                     && candidate.text.to_lowercase() == wanted_text.to_lowercase()
             })
@@ -398,6 +399,16 @@ mod tests {
     }
 
     #[test]
+    fn insert_at_section_end_keeps_trailing_spaces_on_the_last_line() {
+        // Two trailing spaces are a markdown line break, so they belong to the line before.
+        let note = "## A\ntext  \n\n## B\n";
+        assert_eq!(
+            insert(note, "x", Some("A"), Position::End).unwrap(),
+            "## A\ntext  \nx\n\n## B\n"
+        );
+    }
+
+    #[test]
     fn a_section_includes_its_subsections() {
         let note = "# A\nintro\n## B\nb text\n# C\nc text\n";
         let out = insert(note, "end of A", Some("A"), Position::End).unwrap();
@@ -455,6 +466,16 @@ mod tests {
     }
 
     #[test]
+    fn headings_may_be_indented_up_to_three_spaces() {
+        let note = "   ## Three\nkept\n    ## Four\ncode\n";
+        let found: Vec<_> = headings(note)
+            .into_iter()
+            .map(|heading| (heading.level, heading.text))
+            .collect();
+        assert_eq!(found, vec![(2, "Three".to_string())]);
+    }
+
+    #[test]
     fn replace_section_keeps_heading_and_spacing() {
         let out = replace_section(NOTE, "Tasks", "- [x] done\n").unwrap();
         assert!(
@@ -489,6 +510,21 @@ mod tests {
             out,
             "---\ntitle: New\ntags:\n  - x\n# comment\nrating: 5\n---\nBody"
         );
+    }
+
+    #[test]
+    fn update_frontmatter_replaces_unindented_list_items_with_their_property() {
+        // YAML also allows `- item` lines without indentation, a bare `-` and blank lines.
+        let note = "---\ntags:\n- a\n-\n\ntitle: T\n---\nBody";
+        let out = update_frontmatter(note, json!({"tags": ["x"]}).as_object().unwrap());
+        assert_eq!(out, "---\ntags:\n  - x\ntitle: T\n---\nBody");
+    }
+
+    #[test]
+    fn update_frontmatter_never_treats_a_comment_as_a_property() {
+        let note = "---\n# note: keep me\ntitle: T\n---\nBody";
+        let out = update_frontmatter(note, json!({"# note": null}).as_object().unwrap());
+        assert_eq!(out, note);
     }
 
     #[test]
