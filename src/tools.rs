@@ -2,6 +2,7 @@
 
 use serde_json::{Value, json};
 
+use crate::edit::Position;
 use crate::vault::{Vault, VaultError};
 
 pub const DEFAULT_SEARCH_LIMIT: usize = 20;
@@ -72,7 +73,13 @@ impl Toolbox {
         let vault = &self.vault;
         match name {
             "list_notes" => to_json(&vault.list_notes(arguments.optional_string("folder")?)?),
-            "read_note" => Ok(vault.read_note(arguments.required_string("path")?)?),
+            "read_note" => {
+                let path = arguments.required_string("path")?;
+                match arguments.optional_string("heading")? {
+                    Some(heading) => Ok(vault.read_section(path, heading)?),
+                    None => Ok(vault.read_note(path)?),
+                }
+            }
             "create_note" => {
                 let overwrite = arguments.optional_bool("overwrite")?.unwrap_or(false);
                 let path = vault.write_note(
@@ -87,6 +94,55 @@ impl Toolbox {
                 vault.append_note(
                     arguments.required_string("path")?,
                     arguments.required_string("content")?
+                )?
+            )),
+            "edit_note" => {
+                let (path, count) = vault.edit_note(
+                    arguments.required_string("path")?,
+                    arguments.required_string("old_text")?,
+                    arguments.required_string("new_text")?,
+                    arguments.optional_bool("replace_all")?.unwrap_or(false),
+                )?;
+                let noun = if count == 1 {
+                    "occurrence"
+                } else {
+                    "occurrences"
+                };
+                Ok(format!("Replaced {count} {noun} in {path}"))
+            }
+            "insert_into_note" => {
+                let position = match arguments.optional_string("position")? {
+                    None | Some("end") => Position::End,
+                    Some("start") => Position::Start,
+                    Some(_) => {
+                        return Err(ToolError::InvalidArguments(
+                            "'position' must be \"start\" or \"end\"".into(),
+                        ));
+                    }
+                };
+                Ok(format!(
+                    "Inserted into {}",
+                    vault.insert_into_note(
+                        arguments.required_string("path")?,
+                        arguments.required_string("content")?,
+                        arguments.optional_string("heading")?,
+                        position,
+                    )?
+                ))
+            }
+            "replace_section" => Ok(format!(
+                "Replaced section in {}",
+                vault.replace_section(
+                    arguments.required_string("path")?,
+                    arguments.required_string("heading")?,
+                    arguments.required_string("content")?,
+                )?
+            )),
+            "update_frontmatter" => Ok(format!(
+                "Updated frontmatter of {}",
+                vault.update_frontmatter(
+                    arguments.required_string("path")?,
+                    arguments.required_object("properties")?,
                 )?
             )),
             "delete_note" => Ok(format!(
@@ -180,6 +236,13 @@ impl<'a> Arguments<'a> {
             .transpose()
     }
 
+    fn required_object(&self, key: &str) -> Result<&'a serde_json::Map<String, Value>, ToolError> {
+        self.get(key)
+            .ok_or_else(|| ToolError::InvalidArguments(format!("missing required object '{key}'")))?
+            .as_object()
+            .ok_or_else(|| ToolError::InvalidArguments(format!("'{key}' must be an object")))
+    }
+
     fn optional_bool(&self, key: &str) -> Result<Option<bool>, ToolError> {
         self.get(key)
             .map(|value| {
@@ -209,6 +272,10 @@ fn note_path_property() -> Value {
     json!({"type": "string", "description": "Vault-relative note path, e.g. 'Projects/Plan' (the .md extension is optional)"})
 }
 
+fn heading_property(purpose: &str) -> Value {
+    json!({"type": "string", "description": format!("{purpose}. Matches the heading text case-insensitively; add #s to fix the level ('## Tasks') or a parent to pick a nested heading ('2024-01-01 > Tasks')")})
+}
+
 fn all_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
@@ -222,8 +289,11 @@ fn all_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "read_note",
-            description: "Read the full markdown content of a note, including its frontmatter.",
-            input_schema: schema(json!({"path": note_path_property()}), &["path"]),
+            description: "Read the full markdown content of a note, including its frontmatter, or only one heading section of it.",
+            input_schema: schema(
+                json!({"path": note_path_property(), "heading": heading_property("Return only this heading's section (the heading line, its body and its subsections)")}),
+                &["path"],
+            ),
             writes: false,
         },
         ToolDefinition {
@@ -245,6 +315,59 @@ fn all_definitions() -> Vec<ToolDefinition> {
             input_schema: schema(
                 json!({"path": note_path_property(), "content": {"type": "string", "description": "Markdown to append"}}),
                 &["path", "content"],
+            ),
+            writes: true,
+        },
+        ToolDefinition {
+            name: "edit_note",
+            description: "Edit part of an existing note without rewriting it: replaces exact text with new text. old_text must match exactly once (include surrounding text to make it unique) unless replace_all is true. Use an empty new_text to delete.",
+            input_schema: schema(
+                json!({
+                    "path": note_path_property(),
+                    "old_text": {"type": "string", "description": "Exact text to find, including whitespace and line breaks"},
+                    "new_text": {"type": "string", "description": "Text to put in its place"},
+                    "replace_all": {"type": "boolean", "description": "Replace every occurrence instead of requiring a unique match (default false)"},
+                }),
+                &["path", "old_text", "new_text"],
+            ),
+            writes: true,
+        },
+        ToolDefinition {
+            name: "insert_into_note",
+            description: "Insert markdown into an existing note without rewriting it: at the start (after the frontmatter) or end of the note, or at the start or end of a heading's section.",
+            input_schema: schema(
+                json!({
+                    "path": note_path_property(),
+                    "content": {"type": "string", "description": "Markdown to insert, on its own line(s)"},
+                    "heading": heading_property("Insert into this heading's section instead of the whole note"),
+                    "position": {"type": "string", "enum": ["start", "end"], "description": "Insert at the start or the end (default end). The start of a section is just below its heading; the end is after its last line, before any blank line and the next heading"},
+                }),
+                &["path", "content"],
+            ),
+            writes: true,
+        },
+        ToolDefinition {
+            name: "replace_section",
+            description: "Replace the body of one heading section of an existing note (everything up to the next heading of the same or higher level), keeping the heading line and the rest of the note.",
+            input_schema: schema(
+                json!({
+                    "path": note_path_property(),
+                    "heading": heading_property("Heading whose section to replace"),
+                    "content": {"type": "string", "description": "New markdown for the section body, without the heading line. Include any subsections you want to keep"},
+                }),
+                &["path", "heading", "content"],
+            ),
+            writes: true,
+        },
+        ToolDefinition {
+            name: "update_frontmatter",
+            description: "Set or remove frontmatter properties of an existing note, leaving other properties and the body unchanged. Creates the frontmatter if the note has none.",
+            input_schema: schema(
+                json!({
+                    "path": note_path_property(),
+                    "properties": {"type": "object", "description": "Properties to set, e.g. {\"status\": \"done\", \"tags\": [\"a\", \"b\"]}. A null value removes the property"},
+                }),
+                &["path", "properties"],
             ),
             writes: true,
         },
@@ -371,6 +494,10 @@ mod tests {
             "read_note",
             "create_note",
             "append_to_note",
+            "edit_note",
+            "insert_into_note",
+            "replace_section",
+            "update_frontmatter",
             "delete_note",
             "move_note",
             "search_notes",
@@ -539,6 +666,96 @@ mod tests {
                 .call("read_note", &json!({"path": "Done/Idea"}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn partial_edit_tools_change_only_what_they_target() {
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        let note = "# Day\n## Tasks\n- [ ] a\n\n## Log\nmorning\n";
+        toolbox
+            .call("create_note", &json!({"path": "Day", "content": note}))
+            .unwrap();
+        let edited = toolbox
+            .call(
+                "edit_note",
+                &json!({"path": "Day", "old_text": "- [ ] a", "new_text": "- [x] a"}),
+            )
+            .unwrap();
+        assert_eq!(edited, "Replaced 1 occurrence in Day.md");
+        let all = toolbox
+            .call(
+                "edit_note",
+                &json!({"path": "Day", "old_text": "#", "new_text": "#", "replace_all": true}),
+            )
+            .unwrap();
+        assert_eq!(all, "Replaced 5 occurrences in Day.md");
+        toolbox
+            .call(
+                "insert_into_note",
+                &json!({"path": "Day", "heading": "Tasks", "content": "- [ ] b"}),
+            )
+            .unwrap();
+        toolbox
+            .call(
+                "insert_into_note",
+                &json!({"path": "Day", "position": "start", "content": "Top"}),
+            )
+            .unwrap();
+        toolbox
+            .call(
+                "replace_section",
+                &json!({"path": "Day", "heading": "## Log", "content": "evening"}),
+            )
+            .unwrap();
+        toolbox
+            .call(
+                "update_frontmatter",
+                &json!({"path": "Day", "properties": {"status": "done"}}),
+            )
+            .unwrap();
+        assert_eq!(
+            toolbox.call("read_note", &json!({"path": "Day"})).unwrap(),
+            "---\nstatus: done\n---\nTop\n# Day\n## Tasks\n- [x] a\n- [ ] b\n\n## Log\nevening\n"
+        );
+        assert_eq!(
+            toolbox
+                .call("read_note", &json!({"path": "Day", "heading": "Log"}))
+                .unwrap(),
+            "## Log\nevening\n"
+        );
+    }
+
+    #[test]
+    fn partial_edit_tools_report_bad_arguments_and_failed_edits() {
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        let bad_position = toolbox.call(
+            "insert_into_note",
+            &json!({"path": "World", "content": "x", "position": "middle"}),
+        );
+        assert!(matches!(bad_position, Err(ToolError::InvalidArguments(_))));
+        for properties in [json!(null), json!("status")] {
+            let result = toolbox.call(
+                "update_frontmatter",
+                &json!({"path": "World", "properties": properties}),
+            );
+            assert!(matches!(result, Err(ToolError::InvalidArguments(_))));
+        }
+        let missing = toolbox.call(
+            "edit_note",
+            &json!({"path": "World", "old_text": "absent", "new_text": "x"}),
+        );
+        assert!(matches!(
+            missing,
+            Err(ToolError::Vault(VaultError::EditFailed(..)))
+        ));
+        let read_only = toolbox_with_sample_notes(true).1;
+        assert!(matches!(
+            read_only.call(
+                "edit_note",
+                &json!({"path": "World", "old_text": "The", "new_text": "A"})
+            ),
+            Err(ToolError::ReadOnly(_))
+        ));
     }
 
     #[test]

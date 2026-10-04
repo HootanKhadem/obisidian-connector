@@ -3,6 +3,17 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Called by auto-release.yml: a tag pushed with GITHUB_TOKEN does not trigger the push event.
+  workflow_call:
+    inputs:
+      tag:
+        description: Tag to build and release, e.g. v1.2.3
+        type: string
+        required: true
+      notes:
+        description: Release notes in markdown
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -23,6 +34,8 @@ jobs:
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -55,5 +68,7 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          body: ${{ inputs.notes }}
           files: obsidian-connector-*
           generate_release_notes: true

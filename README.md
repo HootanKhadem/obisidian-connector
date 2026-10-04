@@ -31,6 +31,16 @@ irm https://raw.githubusercontent.com/HootanKhadem/obisidian-connector/main/inst
 cargo install --git https://github.com/HootanKhadem/obisidian-connector
 ```
 
+### Update
+
+Run the same install command again. It replaces the binary in place, and the
+config that `setup` wrote points at that same file, so you don't need to run
+`setup` again. Restart your agent (Claude Desktop, Claude Code…) afterwards so
+it starts the new version. On Windows the update works even while your agent is
+running the old version.
+
+Check which version you have with `obsidian-connector --version`.
+
 ## Connect it to your agent
 
 A single command registers the connector with your client. `--vault` takes the
@@ -107,9 +117,13 @@ def run_tool(name: str, arguments: dict) -> str:
 | Tool | What it does |
 | --- | --- |
 | `list_notes` | Lists notes, optionally in one folder |
-| `read_note` | Reads a note's markdown, including frontmatter |
+| `read_note` | Reads a note's markdown, including frontmatter. Set `heading` to read one section only |
 | `create_note` | Creates a note and any missing folders. Set `overwrite` to replace an existing note |
 | `append_to_note` | Appends to a note on a new line, creating the note if needed |
+| `edit_note` | Replaces exact text in a note. The text must match once unless `replace_all` is set |
+| `insert_into_note` | Inserts at the start or end of a note, or of a heading's section |
+| `replace_section` | Replaces the body of one heading's section, keeping the heading |
+| `update_frontmatter` | Sets frontmatter properties, or removes them with `null` |
 | `delete_note` | Deletes a note |
 | `move_note` | Moves or renames a note |
 | `search_notes` | Case-insensitive search across note content and file names, returning matching lines |
@@ -120,6 +134,22 @@ def run_tool(name: str, arguments: dict) -> str:
 
 Paths are relative to the vault. The `.md` extension is optional, so
 `Projects/Plan` and `Projects/Plan.md` refer to the same note.
+
+### Editing part of a note
+
+The edit tools change only the part of a note they target, so an agent never has
+to send the whole note back. Use `edit_note` for a precise change, `insert_into_note`
+to add a line under a heading, `replace_section` to rewrite one section, and
+`update_frontmatter` for properties.
+
+Headings match case-insensitively. When a note repeats a heading, add its level
+(`## Notes`) or its parent (`2024-01-01 > Notes`) to pick one.
+
+```sh
+obsidian-connector call insert_into_note '{"path": "Daily/Today", "heading": "Tasks", "content": "- [ ] call Sam"}'
+obsidian-connector call edit_note '{"path": "Daily/Today", "old_text": "- [ ] call Sam", "new_text": "- [x] call Sam"}'
+obsidian-connector call update_frontmatter '{"path": "Daily/Today", "properties": {"status": "done"}}'
+```
 
 ## Safety
 
@@ -148,14 +178,34 @@ and `rustup component add llvm-tools-preview`.
 | Module | Responsibility |
 | --- | --- |
 | `markdown` | Frontmatter, tag and wikilink parsing |
+| `edit` | Text, heading-section and frontmatter edits |
 | `vault` | Sandboxed note access, search, backlinks and tags |
 | `tools` | Tool definitions, argument validation, schema export |
 | `mcp` | MCP JSON-RPC server over stdio |
 | `discovery` | Finds the vaults registered in Obsidian |
 | `setup` | Writes MCP client configuration |
 
-To publish a release, push a `v*` tag. The release workflow builds binaries for
-Linux, macOS and Windows, which the install scripts then download.
+### Releases
+
+Releases are automatic. Commit messages follow
+[Conventional Commits](https://www.conventionalcommits.org), and CI rejects pull
+requests whose commits don't. When CI passes on `main`, the auto-release workflow
+looks at the commits since the last tag:
+
+| Commit | Release |
+| --- | --- |
+| `fix: …`, `perf: …` | patch, e.g. 0.2.0 → 0.2.1 |
+| `feat: …` | minor, e.g. 0.2.1 → 0.3.0 |
+| `feat!: …` or a `BREAKING CHANGE:` footer | major (minor while the version is 0.x) |
+| `docs:`, `chore:`, `ci:`, `test:`, `refactor:`, `style:`, `build:` | no release |
+
+It bumps the version in `Cargo.toml`, tags the commit, builds binaries for
+Linux, macOS and Windows, and publishes a GitHub release with notes grouped by
+type. The install scripts always download the latest release.
+
+If you protect `main` so that the workflow's token can't push to it, add a
+`RELEASE_TOKEN` repository secret holding a token that can. Pushing a `v*` tag
+by hand still publishes a release too.
 
 ## License
 

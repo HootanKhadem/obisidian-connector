@@ -9,6 +9,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  commits:
+    name: conventional commits
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Releases are worked out from commit messages, so each commit must follow
+      # https://www.conventionalcommits.org, e.g. "feat: add x" or "fix(vault): handle y".
+      - env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pattern='(feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert)(\([^)]+\))?!?: .+'
+          bad="$(git log --no-merges --format='%h %s' "$BASE..$HEAD" | grep -Ev "^[0-9a-f]+ $pattern" || true)"
+          if [ -n "$bad" ]; then
+            echo "::error::These commits don't follow Conventional Commits (type: description):"
+            echo "$bad"
+            exit 1
+          fi
+
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
