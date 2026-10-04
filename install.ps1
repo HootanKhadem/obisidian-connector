@@ -20,6 +20,15 @@ try {
 
 if ($downloaded) {
     New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+    # When updating, the old exe may be running (your agent keeps the server open), so Windows
+    # won't let it be overwritten. A running exe can still be renamed, so move it aside first.
+    $exe = Join-Path $installDir "$bin.exe"
+    # Old copies that are no longer running can be deleted; the rest go next time.
+    Remove-Item "$installDir\$bin.*.old" -Force -ErrorAction SilentlyContinue
+    $old = "$exe.$([guid]::NewGuid().ToString('N')).old"
+    if (Test-Path $exe) {
+        Move-Item $exe $old
+    }
     Expand-Archive -Path $zip -DestinationPath $installDir -Force
     Remove-Item $zip
 
@@ -28,7 +37,10 @@ if ($downloaded) {
         [Environment]::SetEnvironmentVariable('Path', "$userPath;$installDir", 'User')
         Write-Host "Added $installDir to your PATH (open a new terminal to use it)."
     }
-    Write-Host "Installed $installDir\$bin.exe"
+    Write-Host "Installed $(& $exe --version) to $exe"
+    if (Test-Path $old) {
+        Write-Host "Restart your agent (e.g. Claude Desktop) so it starts the new version."
+    }
 } elseif (Get-Command cargo -ErrorAction SilentlyContinue) {
     Write-Host "Building from source with cargo instead (this takes a few minutes)..."
     cargo install --git "https://github.com/$repo" --locked $bin
