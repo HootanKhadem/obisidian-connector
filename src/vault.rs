@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::edit::Position;
+
 #[derive(Debug, thiserror::Error)]
 pub enum VaultError {
     #[error("vault directory not found: {0}")]
@@ -18,6 +20,8 @@ pub enum VaultError {
     InvalidPath(String, &'static str),
     #[error("invalid input: {0}")]
     InvalidInput(&'static str),
+    #[error("cannot edit {0}: {1}")]
+    EditFailed(String, String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -179,6 +183,78 @@ impl Vault {
         }
         existing.push_str(content);
         self.write_note(&relative_path, &existing, true)
+    }
+
+    /// Reads one heading section of a note (see [`crate::edit::find_section`]).
+    pub fn read_section(&self, note: &str, heading: &str) -> Result<String> {
+        let (relative_path, full) = self.existing_note(note)?;
+        let content = std::fs::read_to_string(full)?;
+        crate::edit::read_section(&content, heading)
+            .map(str::to_string)
+            .map_err(|reason| VaultError::EditFailed(relative_path, reason))
+    }
+
+    /// Rewrites an existing note through `change`, which sees its current content.
+    fn modify_note(
+        &self,
+        note: &str,
+        change: impl FnOnce(&str) -> std::result::Result<String, String>,
+    ) -> Result<String> {
+        let (relative_path, full) = self.existing_note(note)?;
+        let content = std::fs::read_to_string(&full)?;
+        let updated = change(&content)
+            .map_err(|reason| VaultError::EditFailed(relative_path.clone(), reason))?;
+        std::fs::write(full, updated)?;
+        Ok(relative_path)
+    }
+
+    /// Replaces exact text in a note and returns how many occurrences were replaced.
+    pub fn edit_note(
+        &self,
+        note: &str,
+        old_text: &str,
+        new_text: &str,
+        replace_all: bool,
+    ) -> Result<(String, usize)> {
+        let mut replaced = 0;
+        let path = self.modify_note(note, |content| {
+            let (updated, count) =
+                crate::edit::replace_text(content, old_text, new_text, replace_all)?;
+            replaced = count;
+            Ok(updated)
+        })?;
+        Ok((path, replaced))
+    }
+
+    /// Inserts content at the start or end of a note, or of one of its heading sections.
+    pub fn insert_into_note(
+        &self,
+        note: &str,
+        content: &str,
+        heading: Option<&str>,
+        position: Position,
+    ) -> Result<String> {
+        self.modify_note(note, |current| {
+            crate::edit::insert(current, content, heading, position)
+        })
+    }
+
+    /// Replaces the body of a heading section, keeping the heading.
+    pub fn replace_section(&self, note: &str, heading: &str, content: &str) -> Result<String> {
+        self.modify_note(note, |current| {
+            crate::edit::replace_section(current, heading, content)
+        })
+    }
+
+    /// Sets or removes (with `null`) frontmatter properties.
+    pub fn update_frontmatter(
+        &self,
+        note: &str,
+        properties: &Map<String, Value>,
+    ) -> Result<String> {
+        self.modify_note(note, |current| {
+            Ok(crate::edit::update_frontmatter(current, properties))
+        })
     }
 
     pub fn delete_note(&self, note: &str) -> Result<String> {
@@ -478,6 +554,72 @@ mod tests {
         let (_vault_directory, vault) = vault_with(&[("Log.md", "first\n")]);
         vault.append_note("Log", "second").unwrap();
         assert_eq!(vault.read_note("Log").unwrap(), "first\nsecond");
+    }
+
+    #[test]
+    fn edit_note_replaces_text_in_place() {
+        let (_vault_directory, vault) = vault_with(&[("Note.md", "one two two")]);
+        assert_eq!(
+            vault.edit_note("Note", "one", "1", false).unwrap(),
+            ("Note.md".to_string(), 1)
+        );
+        assert!(matches!(
+            vault.edit_note("Note", "two", "2", false),
+            Err(VaultError::EditFailed(path, _)) if path == "Note.md"
+        ));
+        assert_eq!(vault.read_note("Note").unwrap(), "1 two two");
+        assert_eq!(vault.edit_note("Note", "two", "2", true).unwrap().1, 2);
+        assert_eq!(vault.read_note("Note").unwrap(), "1 2 2");
+        assert!(matches!(
+            vault.edit_note("Missing", "a", "b", false),
+            Err(VaultError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn section_edits_change_only_their_section() {
+        let (_vault_directory, vault) =
+            vault_with(&[("Day.md", "# Day\n## Tasks\n- a\n\n## Log\nmorning\n")]);
+        vault
+            .insert_into_note("Day", "- b", Some("Tasks"), Position::End)
+            .unwrap();
+        vault
+            .insert_into_note("Day", "Top", None, Position::Start)
+            .unwrap();
+        vault.replace_section("Day", "Log", "evening").unwrap();
+        assert_eq!(
+            vault.read_note("Day").unwrap(),
+            "Top\n# Day\n## Tasks\n- a\n- b\n\n## Log\nevening\n"
+        );
+        assert_eq!(
+            vault.read_section("Day", "Tasks").unwrap(),
+            "## Tasks\n- a\n- b\n\n"
+        );
+        assert!(matches!(
+            vault.read_section("Day", "Nope"),
+            Err(VaultError::EditFailed(..))
+        ));
+        assert!(matches!(
+            vault.replace_section("Day", "Nope", "x"),
+            Err(VaultError::EditFailed(..))
+        ));
+        assert!(matches!(
+            vault.insert_into_note("Missing", "x", None, Position::End),
+            Err(VaultError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn update_frontmatter_rewrites_only_properties() {
+        let (_vault_directory, vault) = vault_with(&[("Note.md", "---\nstatus: draft\n---\nBody")]);
+        let properties = serde_json::json!({"status": "done"});
+        vault
+            .update_frontmatter("Note", properties.as_object().unwrap())
+            .unwrap();
+        assert_eq!(
+            vault.read_note("Note").unwrap(),
+            "---\nstatus: done\n---\nBody"
+        );
     }
 
     #[test]

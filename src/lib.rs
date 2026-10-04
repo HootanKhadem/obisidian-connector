@@ -2,6 +2,7 @@
 //! via the Model Context Protocol (MCP) or a plain JSON command line.
 
 pub mod discovery;
+pub mod edit;
 pub mod markdown;
 pub mod mcp;
 pub mod setup;

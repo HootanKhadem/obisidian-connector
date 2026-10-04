@@ -81,7 +81,7 @@ fn parse_value(raw: &str) -> Value {
     parse_scalar(raw)
 }
 
-fn parse_scalar(raw: &str) -> Value {
+pub(crate) fn parse_scalar(raw: &str) -> Value {
     let raw = raw.trim();
     if raw.len() >= 2
         && ((raw.starts_with('"') && raw.ends_with('"'))
@@ -106,7 +106,7 @@ fn parse_scalar(raw: &str) -> Value {
     Value::String(raw.to_string())
 }
 
-fn unquote(text: &str) -> &str {
+pub(crate) fn unquote(text: &str) -> &str {
     text.trim_matches(|character| character == '"' || character == '\'')
 }
 
