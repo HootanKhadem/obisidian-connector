@@ -25,3 +25,31 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+
+  coverage:
+    name: coverage (≥ 95 % lines)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # Hard gate: Rust follows the Go rule TEST-046 (mutation advisory, 95 % coverage).
+      - run: cargo llvm-cov --summary-only --fail-under-lines 95
+
+  mutants:
+    name: mutation testing (advisory)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-mutants
+      - run: git diff origin/${{ github.base_ref }}... > pr.diff
+      - run: cargo mutants --no-shuffle --in-diff pr.diff
