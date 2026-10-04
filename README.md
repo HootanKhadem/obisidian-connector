@@ -31,6 +31,16 @@ irm https://raw.githubusercontent.com/HootanKhadem/obisidian-connector/main/inst
 cargo install --git https://github.com/HootanKhadem/obisidian-connector
 ```
 
+### Update
+
+Run the same install command again. It replaces the binary in place, and the
+config that `setup` wrote points at that same file, so you don't need to run
+`setup` again. Restart your agent (Claude Desktop, Claude Code…) afterwards so
+it starts the new version. On Windows the update works even while your agent is
+running the old version.
+
+Check which version you have with `obsidian-connector --version`.
+
 ## Connect it to your agent
 
 A single command registers the connector with your client. `--vault` takes the
@@ -175,8 +185,27 @@ and `rustup component add llvm-tools-preview`.
 | `discovery` | Finds the vaults registered in Obsidian |
 | `setup` | Writes MCP client configuration |
 
-To publish a release, push a `v*` tag. The release workflow builds binaries for
-Linux, macOS and Windows, which the install scripts then download.
+### Releases
+
+Releases are automatic. Commit messages follow
+[Conventional Commits](https://www.conventionalcommits.org), and CI rejects pull
+requests whose commits don't. When CI passes on `main`, the auto-release workflow
+looks at the commits since the last tag:
+
+| Commit | Release |
+| --- | --- |
+| `fix: …`, `perf: …` | patch, e.g. 0.2.0 → 0.2.1 |
+| `feat: …` | minor, e.g. 0.2.1 → 0.3.0 |
+| `feat!: …` or a `BREAKING CHANGE:` footer | major (minor while the version is 0.x) |
+| `docs:`, `chore:`, `ci:`, `test:`, `refactor:`, `style:`, `build:` | no release |
+
+It bumps the version in `Cargo.toml`, tags the commit, builds binaries for
+Linux, macOS and Windows, and publishes a GitHub release with notes grouped by
+type. The install scripts always download the latest release.
+
+If you protect `main` so that the workflow's token can't push to it, add a
+`RELEASE_TOKEN` repository secret holding a token that can. Pushing a `v*` tag
+by hand still publishes a release too.
 
 ## License
 

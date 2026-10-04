@@ -1,0 +1,70 @@
+name: Auto release
+
+# After CI passes on a push to main, releases whatever the Conventional Commits since the last
+# tag call for (see .github/scripts/next-release.sh): bumps Cargo.toml, tags, builds, publishes.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.bump.outputs.tag }}
+      notes: ${{ steps.plan.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # If main is protected, add a RELEASE_TOKEN secret allowed to push to it.
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - id: plan
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$TESTED_SHA" ]; then
+            echo "main has moved past the tested commit; CI for the newer commit will release it."
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          .github/scripts/next-release.sh | tee -a "$GITHUB_OUTPUT"
+          {
+            echo "notes<<RELEASE_NOTES_EOF"
+            cat release-notes.md
+            echo "RELEASE_NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+      - id: bump
+        if: steps.plan.outputs.version != ''
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
+          sed -i "/^name = \"obsidian-connector\"$/{n;s/^version = \".*\"/version = \"$VERSION\"/}" Cargo.lock
+          cargo metadata --locked --format-version 1 > /dev/null
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(release): v$VERSION [skip ci]"
+          git tag "v$VERSION"
+          git push origin HEAD:main "v$VERSION"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: version
+    if: needs.version.outputs.tag != ''
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+      notes: ${{ needs.version.outputs.notes }}
+    permissions:
+      contents: write
