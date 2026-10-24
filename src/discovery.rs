@@ -374,4 +374,13 @@ mod tests {
             Err(DiscoveryError::Unknown(..))
         ));
     }
+
+    #[test]
+    fn resolve_vaults_names_a_path_selector_after_its_obsidian_vault() {
+        let dir = TempDir::new().unwrap();
+        let known = vec![known("Friendly", dir.path().to_str().unwrap(), false)];
+        let selectors = vec![dir.path().display().to_string()];
+        let resolved = resolve_vaults(&selectors, false, &known).unwrap();
+        assert_eq!(resolved[0].0, "Friendly");
+    }
 }

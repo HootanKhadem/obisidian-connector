@@ -1037,4 +1037,14 @@ mod tests {
             .unwrap();
         assert!(error.to_string().contains("two vaults are named"));
     }
+
+    #[test]
+    fn export_multi_vault_includes_vault_argument_in_every_format() {
+        let mcp = export_multi_vault(SchemaFormat::Mcp, false);
+        assert_eq!(mcp[0]["name"], "list_vaults");
+        assert!(mcp[1]["inputSchema"]["properties"]["vault"].is_object());
+        let openai = export_multi_vault(SchemaFormat::OpenAi, true);
+        assert_eq!(openai[0]["function"]["name"], "list_vaults");
+        assert!(openai.as_array().unwrap().len() < mcp.as_array().unwrap().len());
+    }
 }
