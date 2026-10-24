@@ -128,6 +128,51 @@ pub fn resolve_vault(
     }
 }
 
+/// Picks the vaults to serve: every `selector`, every known vault when `all` is set, or the
+/// single default vault. Each comes with the name agents use to address it.
+pub fn resolve_vaults(
+    selectors: &[String],
+    all: bool,
+    known: &[KnownVault],
+) -> Result<Vec<(String, PathBuf)>, DiscoveryError> {
+    let mut vaults: Vec<(String, PathBuf)> = Vec::new();
+    let mut add = |name: String, path: PathBuf| {
+        if !vaults.iter().any(|(_, existing)| *existing == path) {
+            vaults.push((name, path));
+        }
+    };
+    if all {
+        for vault in known {
+            add(vault.name.clone(), vault.path.clone());
+        }
+    }
+    for selector in selectors {
+        let path = resolve_vault(Some(selector), known)?;
+        let name = known
+            .iter()
+            .find(|vault| vault.path == path || vault.name.eq_ignore_ascii_case(selector))
+            .map(|vault| vault.name.clone())
+            .or_else(|| {
+                path.canonicalize()
+                    .unwrap_or_else(|_| path.clone())
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| selector.clone());
+        add(name, path);
+    }
+    if vaults.is_empty() {
+        let path = resolve_vault(None, known)?;
+        let name = known
+            .iter()
+            .find(|vault| vault.path == path)
+            .map(|vault| vault.name.clone())
+            .unwrap_or_default();
+        vaults.push((name, path));
+    }
+    Ok(vaults)
+}
+
 /// Reads every vault registered in Obsidian on this machine.
 pub fn known_vaults() -> Vec<KnownVault> {
     let home = std::env::var_os("HOME")
@@ -283,5 +328,50 @@ mod tests {
             resolve_vault(None, &vaults),
             Err(DiscoveryError::Ambiguous(vec!["A".into(), "B".into()]))
         );
+    }
+
+    #[test]
+    fn resolve_vaults_handles_several_selectors_and_all() {
+        let work = TempDir::new().unwrap();
+        let known = vec![
+            known("Notes", "/home/me/Notes", true),
+            known("Archive", "/home/me/Archive", false),
+        ];
+        let selectors = vec!["archive".to_string(), work.path().display().to_string()];
+        let resolved = resolve_vaults(&selectors, false, &known).unwrap();
+        assert_eq!(
+            resolved[0],
+            ("Archive".to_string(), PathBuf::from("/home/me/Archive"))
+        );
+        assert_eq!(resolved.len(), 2);
+        assert_eq!(
+            resolved[1].0,
+            work.path()
+                .canonicalize()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        );
+
+        let all = resolve_vaults(&[], true, &known).unwrap();
+        assert_eq!(all.len(), 2);
+        // The same vault named twice is only served once.
+        let twice = resolve_vaults(&["Notes".into(), "notes".into()], true, &known).unwrap();
+        assert_eq!(twice.len(), 2);
+
+        let default = resolve_vaults(&[], false, &known).unwrap();
+        assert_eq!(
+            default,
+            vec![("Notes".to_string(), PathBuf::from("/home/me/Notes"))]
+        );
+        assert_eq!(
+            resolve_vaults(&[], false, &[]),
+            Err(DiscoveryError::NoVault)
+        );
+        assert!(matches!(
+            resolve_vaults(&["nope".into()], false, &known),
+            Err(DiscoveryError::Unknown(..))
+        ));
     }
 }

@@ -399,3 +399,79 @@ fn setup_claude_code_reports_a_failing_claude_cli() {
         stderr(&output)
     );
 }
+
+#[test]
+fn serve_with_several_vaults_switches_between_them() {
+    let (home, first, second) = (
+        TempDir::new().unwrap(),
+        sample_vault(),
+        TempDir::new().unwrap(),
+    );
+    fs::write(second.path().join("Other.md"), "in the second vault").unwrap();
+    let mut command = connector_command(home.path());
+    command
+        .args(["serve", "--vault"])
+        .arg(first.path())
+        .arg("--vault")
+        .arg(second.path());
+    let (first_name, second_name) = (
+        first
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+        second
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned(),
+    );
+    let call = |id: u64, vault: &str, path: &str| json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": "read_note", "arguments": {"vault": vault, "path": path}}});
+    let session = [
+        json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_vaults"}}),
+        call(2, &first_name, "Hello"),
+        call(3, &second_name, "Other"),
+        call(4, &first_name, "Other"),
+    ]
+    .iter()
+    .map(|message| format!("{message}\n"))
+    .collect::<String>();
+    let output = run(command, &session);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let responses: Vec<Value> = stdout(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let text = |index: usize| {
+        responses[index]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(text(0).contains(&first_name) && text(0).contains(&second_name));
+    assert!(text(1).contains("Hello [[World]]"));
+    assert_eq!(text(2), "in the second vault");
+    assert_eq!(responses[3]["result"]["isError"], true);
+}
+
+#[test]
+fn setup_with_several_vaults_registers_all_of_them() {
+    let (home, first, second) = (TempDir::new().unwrap(), sample_vault(), sample_vault());
+    let output = connector_command(home.path())
+        .args(["setup", "cursor", "--vault"])
+        .arg(first.path())
+        .arg("--vault")
+        .arg(second.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let written: Value =
+        serde_json::from_str(&fs::read_to_string(home.path().join(".cursor/mcp.json")).unwrap())
+            .unwrap();
+    let args = written["mcpServers"]["obsidian"]["args"]
+        .as_array()
+        .unwrap();
+    assert_eq!(args.iter().filter(|arg| *arg == "--vault").count(), 2);
+}

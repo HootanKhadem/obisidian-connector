@@ -85,13 +85,33 @@ impl Server {
             "protocolVersion": version,
             "capabilities": {"tools": {"listChanged": false}},
             "serverInfo": {"name": "obsidian-connector", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": format!(
-                "Tools for the Obsidian vault at {}. Notes are markdown files addressed by vault-relative paths \
-                 such as 'Projects/Plan' (the .md extension is optional). Use search_notes or list_notes to find \
-                 notes before reading them, and [[wikilinks]] to link notes together.",
-                self.toolbox.vault().root().display()
-            ),
+            "instructions": self.instructions(),
         })
+    }
+
+    fn instructions(&self) -> String {
+        let usage = "Notes are markdown files addressed by vault-relative paths such as 'Projects/Plan' \
+             (the .md extension is optional). Use search_notes or list_notes to find notes before reading them, \
+             and [[wikilinks]] to link notes together.";
+        match self.toolbox.vaults() {
+            [only] => format!(
+                "Tools for the Obsidian vault at {}. {usage}",
+                only.vault.root().display()
+            ),
+            vaults => {
+                let list = vaults
+                    .iter()
+                    .map(|named| format!("'{}' ({})", named.name, named.vault.root().display()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "Tools for {} Obsidian vaults: {list}. Every tool takes a required 'vault' argument naming the \
+                     vault to use; switch vaults by changing it between calls. {usage} Paths and links are relative to \
+                     the chosen vault, so notes in different vaults cannot link to each other.",
+                    vaults.len()
+                )
+            }
+        }
     }
 
     fn call_tool(&self, params: &Value) -> Result<Value, (i64, String)> {
@@ -172,6 +192,53 @@ mod tests {
                 .unwrap()
                 .contains("Obsidian")
         );
+    }
+
+    fn multi_vault_server() -> (TempDir, TempDir, Server) {
+        let (first, second) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        fs::write(first.path().join("Hello.md"), "from first").unwrap();
+        fs::write(second.path().join("Hello.md"), "from second").unwrap();
+        let named = |name: &str, dir: &TempDir| crate::tools::NamedVault {
+            name: name.into(),
+            vault: Vault::open(dir.path()).unwrap(),
+        };
+        let toolbox = Toolbox::with_vaults(
+            vec![named("Work", &first), named("Personal", &second)],
+            false,
+        )
+        .unwrap();
+        (first, second, Server::new(toolbox))
+    }
+
+    #[test]
+    fn multi_vault_server_switches_vaults_per_call() {
+        let (_first, _second, server) = multi_vault_server();
+        let read = |id: i64, vault: &str| {
+            request(
+                &server,
+                json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "read_note", "arguments": {"vault": vault, "path": "Hello"}}}),
+            )
+        };
+        assert_eq!(
+            read(1, "Work")["result"]["content"][0]["text"],
+            "from first"
+        );
+        assert_eq!(
+            read(2, "personal")["result"]["content"][0]["text"],
+            "from second"
+        );
+        let init = request(
+            &server,
+            json!({"jsonrpc": "2.0", "id": 3, "method": "initialize", "params": {}}),
+        );
+        let instructions = init["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.contains("'Work'") && instructions.contains("'Personal'"));
+        let tools = request(
+            &server,
+            json!({"jsonrpc": "2.0", "id": 4, "method": "tools/list"}),
+        );
+        assert_eq!(tools["result"]["tools"][0]["name"], "list_vaults");
     }
 
     #[test]

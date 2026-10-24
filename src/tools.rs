@@ -36,32 +36,110 @@ pub struct ToolDefinition {
     pub writes: bool,
 }
 
+/// A vault the agent can address by name.
+pub struct NamedVault {
+    pub name: String,
+    pub vault: Vault,
+}
+
 pub struct Toolbox {
-    vault: Vault,
+    vaults: Vec<NamedVault>,
     read_only: bool,
 }
 
 impl Toolbox {
+    /// A toolbox for a single vault. Tools take no `vault` argument.
     pub fn new(vault: Vault, read_only: bool) -> Self {
-        Self { vault, read_only }
+        let name = vault
+            .root()
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "vault".to_string());
+        Self {
+            vaults: vec![NamedVault { name, vault }],
+            read_only,
+        }
     }
 
-    pub fn vault(&self) -> &Vault {
-        &self.vault
+    /// A toolbox over several vaults. Names must be unique (ignoring case).
+    /// With more than one vault, every tool takes a required `vault` argument
+    /// and the `list_vaults` tool is available.
+    pub fn with_vaults(vaults: Vec<NamedVault>, read_only: bool) -> Result<Self, ToolError> {
+        if vaults.is_empty() {
+            return Err(ToolError::InvalidArguments("no vaults given".into()));
+        }
+        for (index, vault) in vaults.iter().enumerate() {
+            if vaults[..index]
+                .iter()
+                .any(|earlier| earlier.name.eq_ignore_ascii_case(&vault.name))
+            {
+                return Err(ToolError::InvalidArguments(format!(
+                    "two vaults are named '{}'",
+                    vault.name
+                )));
+            }
+        }
+        Ok(Self { vaults, read_only })
+    }
+
+    pub fn vaults(&self) -> &[NamedVault] {
+        &self.vaults
+    }
+
+    fn is_multi(&self) -> bool {
+        self.vaults.len() > 1
     }
 
     /// The tools available in the current mode.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        definitions(self.read_only)
+        definitions_for(self.read_only, self.is_multi())
     }
 
     /// Tool definitions rendered in the requested schema dialect.
     pub fn export(&self, format: SchemaFormat) -> Value {
-        export(format, self.read_only)
+        render(self.definitions(), format)
+    }
+
+    fn select_vault(&self, arguments: &Arguments) -> Result<&Vault, ToolError> {
+        if !self.is_multi() {
+            return Ok(&self.vaults[0].vault);
+        }
+        let names = || {
+            self.vaults
+                .iter()
+                .map(|named| named.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let requested = arguments.optional_string("vault")?.ok_or_else(|| {
+            ToolError::InvalidArguments(format!(
+                "missing required string 'vault' (available vaults: {})",
+                names()
+            ))
+        })?;
+        self.vaults
+            .iter()
+            .find(|named| named.name.eq_ignore_ascii_case(requested))
+            .map(|named| &named.vault)
+            .ok_or_else(|| {
+                ToolError::InvalidArguments(format!(
+                    "unknown vault '{requested}' (available vaults: {})",
+                    names()
+                ))
+            })
     }
 
     /// Runs a tool and returns its textual result.
     pub fn call(&self, name: &str, arguments: &Value) -> Result<String, ToolError> {
+        if name == "list_vaults" && self.is_multi() {
+            return to_json(
+                &self
+                    .vaults
+                    .iter()
+                    .map(|named| json!({"name": named.name, "path": named.vault.root()}))
+                    .collect::<Vec<_>>(),
+            );
+        }
         let definition = all_definitions()
             .into_iter()
             .find(|definition| definition.name == name)
@@ -70,7 +148,7 @@ impl Toolbox {
             return Err(ToolError::ReadOnly(name.to_string()));
         }
         let arguments = Arguments::new(arguments)?;
-        let vault = &self.vault;
+        let vault = self.select_vault(&arguments)?;
         match name {
             "list_notes" => to_json(&vault.list_notes(arguments.optional_string("folder")?)?),
             "read_note" => {
@@ -175,15 +253,53 @@ impl Toolbox {
 
 /// The tools available with or without write access.
 pub fn definitions(read_only: bool) -> Vec<ToolDefinition> {
-    all_definitions()
+    definitions_for(read_only, false)
+}
+
+/// The tools for one vault or, with `multi_vault`, for several: every tool then
+/// takes a required `vault` argument and `list_vaults` is added.
+pub fn definitions_for(read_only: bool, multi_vault: bool) -> Vec<ToolDefinition> {
+    let mut definitions: Vec<ToolDefinition> = all_definitions()
         .into_iter()
         .filter(|definition| !(read_only && definition.writes))
-        .collect()
+        .collect();
+    if multi_vault {
+        for definition in &mut definitions {
+            let schema = definition
+                .input_schema
+                .as_object_mut()
+                .expect("object schema");
+            schema["properties"]["vault"] = json!({"type": "string", "description": "Name of the vault to use (see list_vaults)"});
+            schema["required"]
+                .as_array_mut()
+                .expect("required list")
+                .insert(0, json!("vault"));
+        }
+        definitions.insert(
+            0,
+            ToolDefinition {
+                name: "list_vaults",
+                description: "List the vaults you can use. Pass a vault's name as the 'vault' argument of every other tool.",
+                input_schema: schema(json!({}), &[]),
+                writes: false,
+            },
+        );
+    }
+    definitions
 }
 
 /// Tool definitions rendered in the requested schema dialect.
 pub fn export(format: SchemaFormat, read_only: bool) -> Value {
-    let tools = definitions(read_only).into_iter().map(|definition| match format {
+    render(definitions(read_only), format)
+}
+
+/// Like [`export`], for a toolbox with several vaults.
+pub fn export_multi_vault(format: SchemaFormat, read_only: bool) -> Value {
+    render(definitions_for(read_only, true), format)
+}
+
+fn render(definitions: Vec<ToolDefinition>, format: SchemaFormat) -> Value {
+    let tools = definitions.into_iter().map(|definition| match format {
         SchemaFormat::Mcp => json!({"name": definition.name, "description": definition.description, "inputSchema": definition.input_schema}),
         SchemaFormat::Anthropic => json!({"name": definition.name, "description": definition.description, "input_schema": definition.input_schema}),
         SchemaFormat::OpenAi => json!({
@@ -830,5 +946,95 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn two_vaults() -> (TempDir, TempDir, Toolbox) {
+        let (work, home) = (TempDir::new().unwrap(), TempDir::new().unwrap());
+        fs::write(work.path().join("A.md"), "work note").unwrap();
+        let named = |name: &str, dir: &TempDir| NamedVault {
+            name: name.into(),
+            vault: Vault::open(dir.path()).unwrap(),
+        };
+        let toolbox =
+            Toolbox::with_vaults(vec![named("Work", &work), named("Home", &home)], false).unwrap();
+        (work, home, toolbox)
+    }
+
+    #[test]
+    fn several_vaults_require_a_vault_argument() {
+        let (_work, _home, toolbox) = two_vaults();
+        let names: Vec<_> = toolbox.definitions().iter().map(|d| d.name).collect();
+        assert_eq!(names[0], "list_vaults");
+        for definition in toolbox.definitions().iter().skip(1) {
+            assert_eq!(
+                definition.input_schema["required"][0], "vault",
+                "{}",
+                definition.name
+            );
+            assert!(definition.input_schema["properties"]["vault"].is_object());
+        }
+        let missing = toolbox
+            .call("read_note", &json!({"path": "A"}))
+            .unwrap_err();
+        assert!(missing.to_string().contains("Work, Home"), "{missing}");
+        let unknown = toolbox
+            .call("read_note", &json!({"vault": "Nope", "path": "A"}))
+            .unwrap_err();
+        assert!(unknown.to_string().contains("unknown vault 'Nope'"));
+    }
+
+    #[test]
+    fn calls_are_routed_to_the_named_vault() {
+        let (work, home, toolbox) = two_vaults();
+        let read = toolbox
+            .call("read_note", &json!({"vault": "work", "path": "A"}))
+            .unwrap();
+        assert_eq!(read, "work note");
+        toolbox
+            .call(
+                "create_note",
+                &json!({"vault": "Home", "path": "B", "content": "x"}),
+            )
+            .unwrap();
+        assert!(home.path().join("B.md").exists());
+        assert!(!work.path().join("B.md").exists());
+        assert!(
+            toolbox
+                .call("read_note", &json!({"vault": "Home", "path": "A"}))
+                .is_err()
+        );
+        let listed = toolbox.call("list_vaults", &json!({})).unwrap();
+        assert!(listed.contains("\"Work\"") && listed.contains("\"Home\""));
+    }
+
+    #[test]
+    fn single_vault_toolbox_is_unchanged() {
+        let (_dir, toolbox) = toolbox_with_sample_notes(false);
+        assert!(
+            toolbox
+                .definitions()
+                .iter()
+                .all(|d| d.name != "list_vaults")
+        );
+        assert!(toolbox.call("list_vaults", &json!({})).is_err());
+        assert!(
+            toolbox
+                .call("read_note", &json!({"vault": "ignored", "path": "Hello"}))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn with_vaults_rejects_empty_and_duplicate_names() {
+        assert!(Toolbox::with_vaults(vec![], false).is_err());
+        let dir = TempDir::new().unwrap();
+        let named = |name: &str| NamedVault {
+            name: name.into(),
+            vault: Vault::open(dir.path()).unwrap(),
+        };
+        let error = Toolbox::with_vaults(vec![named("Notes"), named("notes")], false)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("two vaults are named"));
     }
 }

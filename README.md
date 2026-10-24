@@ -41,6 +41,19 @@ running the old version.
 
 Check which version you have with `obsidian-connector --version`.
 
+**Updating to multiple-vault support (0.3.0 and later)**
+
+1. Run the install command for your platform again, as above.
+2. Your existing config keeps working and still serves one vault. To give the
+   agent several vaults, run `setup` again and pass `--vault` once per vault
+   (or `--all-vaults`). See [Use several vaults at once](#use-several-vaults-at-once).
+   `setup` replaces the old `obsidian` entry and saves the previous config as a `.bak`.
+   For Claude Code, run `claude mcp remove obsidian` first, because `claude mcp add`
+   won't overwrite an existing server.
+3. Restart your agent.
+
+Nothing changes for single-vault setups: tools take the same arguments as before.
+
 ## Connect it to your agent
 
 A single command registers the connector with your client. `--vault` takes the
@@ -63,6 +76,60 @@ afterwards.
 - Add `--print` to show the config instead of writing it.
 
 To find the names of your vaults, run `obsidian-connector vaults`.
+
+### Use several vaults at once
+
+Pass `--vault` more than once, or `--all-vaults` to use every vault Obsidian knows
+about. One connector then serves all of them, and the agent picks a vault on each
+call, so it can move between vaults in a single conversation without restarting.
+
+```sh
+obsidian-connector setup claude-desktop --vault "Work" --vault "Personal" --vault ~/Documents/Research
+obsidian-connector setup claude-code --all-vaults
+```
+
+With more than one vault:
+
+- A `list_vaults` tool returns each vault's name and path.
+- Every other tool takes a required `vault` argument: the vault's name (the name
+  Obsidian shows, or the folder name for a path), matched case-insensitively.
+  The agent sees the names in the server instructions and can switch vaults by
+  changing `vault` from one call to the next.
+- Paths, links, tags and backlinks stay inside the chosen vault. To copy a note
+  between vaults, the agent reads it from one and creates it in the other.
+- `vault` is required, so a write never lands in the wrong vault by default.
+- `--read-only` applies to all the vaults.
+- Two vaults can't share a name. If two folders have the same name, give one of
+  them through its Obsidian name, or rename the folder.
+
+Example prompts: "Compare my project plan in Work with the one in Research",
+or "Move the meeting notes from Personal into Work". The tool calls look like:
+
+```json
+{"name": "search_notes", "arguments": {"vault": "Work", "query": "roadmap"}}
+{"name": "create_note", "arguments": {"vault": "Personal", "path": "Ideas/Roadmap", "content": "…"}}
+```
+
+The same works without MCP:
+
+```sh
+obsidian-connector call list_vaults --vault Work --vault Personal
+obsidian-connector call read_note '{"vault": "Personal", "path": "Inbox"}' --vault Work --vault Personal
+obsidian-connector tools --format openai --multi-vault   # schemas that include the vault argument
+```
+
+The generated config for several vaults looks like this:
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "/path/to/obsidian-connector",
+      "args": ["serve", "--vault", "/path/to/Work", "--vault", "/path/to/Personal"]
+    }
+  }
+}
+```
 
 **Any other MCP client:** run `obsidian-connector setup generic --vault "My Vault"`
 and paste its output into the client's config. The output looks like this:
@@ -116,6 +183,7 @@ def run_tool(name: str, arguments: dict) -> str:
 
 | Tool | What it does |
 | --- | --- |
+| `list_vaults` | Lists the available vaults. Only present when several vaults are served |
 | `list_notes` | Lists notes, optionally in one folder |
 | `read_note` | Reads a note's markdown, including frontmatter. Set `heading` to read one section only |
 | `create_note` | Creates a note and any missing folders. Set `overwrite` to replace an existing note |
@@ -132,6 +200,7 @@ def run_tool(name: str, arguments: dict) -> str:
 | `find_notes_by_tag` | Lists the notes with a tag; `project` also matches `project/alpha` |
 | `get_note_info` | Returns a note's frontmatter, tags, outgoing links, backlinks and size |
 
+With several vaults, every tool also takes a `vault` argument (see above).
 Paths are relative to the vault. The `.md` extension is optional, so
 `Projects/Plan` and `Projects/Plan.md` refer to the same note.
 
@@ -158,7 +227,8 @@ obsidian-connector call update_frontmatter '{"path": "Daily/Today", "properties"
 - Hidden folders such as `.obsidian`, `.git` and `.trash` can't be read or written.
 - `create_note` never overwrites a note unless the agent sets `overwrite`.
   `move_note` never replaces an existing note.
-- `--read-only` removes every tool that changes the vault.
+- `--read-only` removes every tool that changes the vault, in every vault.
+- With several vaults, each call must name its vault, and nothing crosses between them.
 
 ## Development
 
