@@ -5,10 +5,10 @@ use std::process::ExitCode;
 use clap::{Args, Parser, Subcommand};
 use serde_json::Value;
 
-use obsidian_connector::discovery::{known_vaults, resolve_vault};
+use obsidian_connector::discovery::{known_vaults, resolve_vaults};
 use obsidian_connector::mcp::Server;
 use obsidian_connector::setup::{self, Client, Launch};
-use obsidian_connector::tools::{self, SchemaFormat, Toolbox};
+use obsidian_connector::tools::{self, NamedVault, SchemaFormat, Toolbox};
 use obsidian_connector::vault::Vault;
 
 /// Connect any AI agent to an Obsidian vault, via MCP or plain JSON on the command line.
@@ -21,9 +21,13 @@ struct Cli {
 
 #[derive(Args)]
 struct VaultOptions {
-    /// Vault folder or Obsidian vault name. Defaults to the only (or currently open) vault in Obsidian.
+    /// Vault folder or Obsidian vault name. Repeat it to give the agent several vaults.
+    /// Defaults to the only (or currently open) vault in Obsidian.
     #[arg(long, short, env = "OBSIDIAN_VAULT")]
-    vault: Option<String>,
+    vault: Vec<String>,
+    /// Give the agent every vault registered in Obsidian.
+    #[arg(long)]
+    all_vaults: bool,
     /// Only expose tools that read the vault.
     #[arg(long)]
     read_only: bool,
@@ -49,6 +53,9 @@ enum Command {
         /// Only list tools that read the vault.
         #[arg(long)]
         read_only: bool,
+        /// Include the `vault` argument and `list_vaults`, as served when several vaults are given.
+        #[arg(long)]
+        multi_vault: bool,
     },
     /// List the vaults registered in the Obsidian app.
     Vaults,
@@ -77,12 +84,15 @@ fn main() -> ExitCode {
 fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Command::Serve(options) => {
-            let vault = open_vault(options.vault.as_deref())?;
-            eprintln!(
-                "obsidian-connector: serving vault {}",
-                vault.root().display()
-            );
-            let server = Server::new(Toolbox::new(vault, options.read_only));
+            let (toolbox, _) = open_toolbox(&options)?;
+            for named in toolbox.vaults() {
+                eprintln!(
+                    "obsidian-connector: serving vault '{}' at {}",
+                    named.name,
+                    named.vault.root().display()
+                );
+            }
+            let server = Server::new(toolbox);
             server
                 .run(std::io::stdin().lock(), std::io::stdout().lock())
                 .map_err(|error| error.to_string())
@@ -93,15 +103,23 @@ fn run(cli: Cli) -> Result<(), String> {
             options,
         } => {
             let arguments = parse_arguments(arguments.as_deref())?;
-            let toolbox = Toolbox::new(open_vault(options.vault.as_deref())?, options.read_only);
+            let (toolbox, _) = open_toolbox(&options)?;
             let output = toolbox
                 .call(&tool, &arguments)
                 .map_err(|error| error.to_string())?;
             println!("{output}");
             Ok(())
         }
-        Command::Tools { format, read_only } => {
-            let schemas = tools::export(format, read_only);
+        Command::Tools {
+            format,
+            read_only,
+            multi_vault,
+        } => {
+            let schemas = if multi_vault {
+                tools::export_multi_vault(format, read_only)
+            } else {
+                tools::export(format, read_only)
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(&schemas).expect("JSON values always serialize")
@@ -127,9 +145,20 @@ fn run(cli: Cli) -> Result<(), String> {
     }
 }
 
-fn open_vault(selector: Option<&str>) -> Result<Vault, String> {
-    let path = resolve_vault(selector, &known_vaults()).map_err(|error| error.to_string())?;
-    Vault::open(path).map_err(|error| error.to_string())
+/// Opens every requested vault, returning the toolbox and the vault folders.
+fn open_toolbox(options: &VaultOptions) -> Result<(Toolbox, Vec<PathBuf>), String> {
+    let resolved = resolve_vaults(&options.vault, options.all_vaults, &known_vaults())
+        .map_err(|error| error.to_string())?;
+    let mut vaults = Vec::new();
+    let mut paths = Vec::new();
+    for (name, path) in resolved {
+        let vault = Vault::open(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        paths.push(vault.root().to_path_buf());
+        vaults.push(NamedVault { name, vault });
+    }
+    let toolbox =
+        Toolbox::with_vaults(vaults, options.read_only).map_err(|error| error.to_string())?;
+    Ok((toolbox, paths))
 }
 
 fn parse_arguments(raw: Option<&str>) -> Result<Value, String> {
@@ -151,11 +180,11 @@ fn parse_arguments(raw: Option<&str>) -> Result<Value, String> {
 }
 
 fn install(client: Client, options: &VaultOptions, print: bool) -> Result<(), String> {
-    let vault = open_vault(options.vault.as_deref())?;
+    let (_, vault_paths) = open_toolbox(options)?;
     let binary = std::env::current_exe().map_err(|error| error.to_string())?;
     let launch = Launch {
         binary: clean_path(&binary),
-        vault: clean_path(vault.root()),
+        vaults: vault_paths.iter().map(|path| clean_path(path)).collect(),
         read_only: options.read_only,
     };
 

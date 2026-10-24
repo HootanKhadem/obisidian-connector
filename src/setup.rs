@@ -32,17 +32,17 @@ pub enum SetupError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub binary: PathBuf,
-    pub vault: PathBuf,
+    pub vaults: Vec<PathBuf>,
     pub read_only: bool,
 }
 
 impl Launch {
     pub fn arguments(&self) -> Vec<String> {
-        let mut arguments = vec![
-            "serve".to_string(),
-            "--vault".to_string(),
-            self.vault.display().to_string(),
-        ];
+        let mut arguments = vec!["serve".to_string()];
+        for vault in &self.vaults {
+            arguments.push("--vault".to_string());
+            arguments.push(vault.display().to_string());
+        }
         if self.read_only {
             arguments.push("--read-only".to_string());
         }
@@ -146,7 +146,7 @@ mod tests {
     fn launch(read_only: bool) -> Launch {
         Launch {
             binary: "/bin/obsidian-connector".into(),
-            vault: "/home/me/My Vault".into(),
+            vaults: vec!["/home/me/My Vault".into()],
             read_only,
         }
     }
@@ -160,6 +160,31 @@ mod tests {
         assert_eq!(
             launch(true).arguments(),
             vec!["serve", "--vault", "/home/me/My Vault", "--read-only"]
+        );
+    }
+
+    #[test]
+    fn several_vaults_repeat_the_vault_flag() {
+        let launch = Launch {
+            binary: "/bin/oc".into(),
+            vaults: vec!["/v/work".into(), "/v/home".into()],
+            read_only: true,
+        };
+        assert_eq!(
+            launch.arguments(),
+            vec![
+                "serve",
+                "--vault",
+                "/v/work",
+                "--vault",
+                "/v/home",
+                "--read-only"
+            ]
+        );
+        assert!(
+            install_command(Client::ClaudeCode, &launch)
+                .unwrap()
+                .ends_with("serve --vault '/v/work' --vault '/v/home' --read-only")
         );
     }
 
@@ -246,7 +271,7 @@ mod tests {
     fn install_command_quotes_single_quotes() {
         let launch_with_quote = Launch {
             binary: "/bin/oc".into(),
-            vault: "/v/it's".into(),
+            vaults: vec!["/v/it's".into()],
             read_only: false,
         };
         assert!(
