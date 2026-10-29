@@ -16,19 +16,19 @@ need to be running, and you don't need to install a plugin.
 **macOS / Linux**
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/HootanKhadem/obisidian-connector/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/HootanKhadem/obsidain-connector/main/install.sh | sh
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-irm https://raw.githubusercontent.com/HootanKhadem/obisidian-connector/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/HootanKhadem/obsidain-connector/main/install.ps1 | iex
 ```
 
 **With Cargo**
 
 ```sh
-cargo install --git https://github.com/HootanKhadem/obisidian-connector
+cargo install --git https://github.com/HootanKhadem/obsidain-connector
 ```
 
 ### Update
